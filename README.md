@@ -5,7 +5,7 @@
 | **Owner** | GreenFlux |
 | **Team** | DevRel |
 | **Platform** | netlify |
-| **Live URL** | https://69d7ed432e1ef752a75ad9dd--hyperformula-mcp.netlify.app |
+| **Live URL** | https://69d7eda6eb353c2fe78c706e--hyperformula-mcp.netlify.app |
 | **Repo** | https://github.com/handsontable/hyperformula-mcp |
 | **ClickUp** | https://app.clickup.com/t/9015210959/HF-62 |
 | **Tags** | testing, LLMs |
