@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HyperFormula Edge Calc Service</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Roboto', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      color: #222;
+      background: #fff;
+      line-height: 1.6;
+    }
+
+    /* Header */
+    .header {
+      background: #185aca;
+      color: #fff;
+      padding: 2rem 1rem;
+    }
+    .header-inner {
+      max-width: 960px;
+      margin: 0 auto;
+    }
+    .header h1 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      margin-bottom: .25rem;
+    }
+    .header h1 span {
+      font-weight: 300;
+      opacity: .85;
+    }
+    .header p {
+      font-size: .95rem;
+      opacity: .85;
+      font-weight: 300;
+    }
+    .badge {
+      display: inline-block;
+      margin-top: .75rem;
+      font-size: .7rem;
+      font-weight: 500;
+      background: rgba(255,255,255,.15);
+      padding: .2rem .6rem;
+      border-radius: 3px;
+      letter-spacing: .03em;
+    }
+
+    /* Main content */
+    .container {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 2rem 1rem;
+    }
+
+    /* Example buttons */
+    .examples {
+      display: flex;
+      gap: .5rem;
+      flex-wrap: wrap;
+      margin-bottom: 1rem;
+    }
+    .examples button {
+      padding: .4rem .85rem;
+      font-size: .8rem;
+      font-family: inherit;
+      cursor: pointer;
+      border: 1px solid #d0d5dd;
+      border-radius: 6px;
+      background: #f5f6fa;
+      color: #222;
+      font-weight: 500;
+      transition: all .15s;
+    }
+    .examples button:hover {
+      border-color: #104acc;
+      color: #104acc;
+      background: #eef2ff;
+    }
+    .examples button.active {
+      border-color: #104acc;
+      background: #104acc;
+      color: #fff;
+    }
+
+    label {
+      font-weight: 500;
+      display: block;
+      margin-bottom: .35rem;
+      font-size: .85rem;
+      color: #363636;
+    }
+
+    /* Side by side layout */
+    .editor-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      align-items: start;
+    }
+    @media (max-width: 640px) {
+      .editor-row {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    textarea {
+      width: 100%;
+      font-family: 'SF Mono', 'Fira Code', 'Fira Mono', Menlo, monospace;
+      font-size: .82rem;
+      padding: .75rem;
+      border: 1px solid #d0d5dd;
+      border-radius: 8px;
+      resize: vertical;
+      line-height: 1.5;
+      transition: border-color .15s;
+    }
+    textarea:focus {
+      outline: none;
+      border-color: #104acc;
+      box-shadow: 0 0 0 3px rgba(16, 74, 204, .1);
+    }
+    #input { height: 240px; }
+    #output { height: 240px; background: #f9fafb; color: #222; }
+
+    .btn-evaluate {
+      margin-top: .75rem;
+      padding: .55rem 1.5rem;
+      font-size: .9rem;
+      font-family: inherit;
+      font-weight: 500;
+      cursor: pointer;
+      border: none;
+      border-radius: 8px;
+      background: #104acc;
+      color: #fff;
+      transition: all .15s;
+    }
+    .btn-evaluate:hover {
+      background: #0d3ca6;
+      transform: translateY(-1px);
+    }
+    .btn-evaluate:active {
+      transform: translateY(0);
+    }
+
+    /* Divider */
+    .divider {
+      border: none;
+      border-top: 1px solid #e5e7eb;
+      margin: 2.5rem 0;
+    }
+
+    /* Usage section */
+    .usage h2 {
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: #222;
+      margin-bottom: .25rem;
+    }
+    .usage > p {
+      font-size: .85rem;
+      color: #6f6f6f;
+      margin-bottom: 1.5rem;
+    }
+
+    .mode-card {
+      background: #f5f6fa;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 1.25rem;
+      margin-bottom: 1rem;
+    }
+    .mode-card h3 {
+      font-size: .95rem;
+      font-weight: 600;
+      color: #104acc;
+      margin-bottom: .15rem;
+    }
+    .mode-card .desc {
+      font-size: .82rem;
+      color: #6f6f6f;
+      margin-bottom: .75rem;
+    }
+    .mode-card pre {
+      background: #1a1a2e;
+      color: #e0e0e0;
+      padding: .75rem;
+      border-radius: 6px;
+      font-size: .78rem;
+      line-height: 1.55;
+      overflow-x: auto;
+    }
+    .mode-card pre .key { color: #7ec8e3; }
+    .mode-card pre .str { color: #a8d8a8; }
+    .mode-card pre .num { color: #f0c674; }
+    .mode-card pre .punct { color: #888; }
+
+    /* Return modes table */
+    .return-modes {
+      margin-top: 1.5rem;
+    }
+    .return-modes h3 {
+      font-size: .95rem;
+      font-weight: 600;
+      color: #222;
+      margin-bottom: .5rem;
+    }
+    .return-modes table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: .82rem;
+    }
+    .return-modes th {
+      text-align: left;
+      padding: .5rem .75rem;
+      background: #f5f6fa;
+      border: 1px solid #e5e7eb;
+      font-weight: 600;
+      color: #363636;
+    }
+    .return-modes td {
+      padding: .5rem .75rem;
+      border: 1px solid #e5e7eb;
+      color: #555;
+    }
+    .return-modes code {
+      background: #eef2ff;
+      color: #104acc;
+      padding: .1rem .35rem;
+      border-radius: 3px;
+      font-size: .78rem;
+    }
+
+    /* Footer */
+    .footer {
+      text-align: center;
+      padding: 2rem 1rem;
+      font-size: .78rem;
+      color: #6f6f6f;
+      border-top: 1px solid #e5e7eb;
+      margin-top: 2rem;
+    }
+    .footer a {
+      color: #104acc;
+      text-decoration: none;
+    }
+    .footer a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div class="header-inner">
+      <h1>HyperFormula Edge Calc <span>Service</span></h1>
+      <p>Stateless spreadsheet calculations via HTTP. Formulas instead of code.</p>
+      <span class="badge">Powered by HyperFormula</span>
+    </div>
+  </div>
+
+  <div class="container">
+
+    <label>Load Example</label>
+    <div class="examples">
+      <button class="active" onclick="loadExample('sum')">SUM formula</button>
+      <button onclick="loadExample('average')">AVERAGE</button>
+      <button onclick="loadExample('conditional')">IF / conditional</button>
+      <button onclick="loadExample('embedded')">Embedded formulas</button>
+      <button onclick="loadExample('grid')">Full grid return</button>
+      <button onclick="loadExample('results')">Results only</button>
+    </div>
+
+    <div class="editor-row">
+      <div>
+        <label for="input">Request JSON</label>
+        <textarea id="input"></textarea>
+        <button class="btn-evaluate" onclick="run()">Evaluate</button>
+      </div>
+      <div>
+        <label for="output">Response</label>
+        <textarea id="output" readonly></textarea>
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <div class="usage">
+      <h2>Usage</h2>
+      <p>Send a POST to <code style="background:#eef2ff;color:#104acc;padding:.1rem .35rem;border-radius:3px;font-size:.82rem">/api/calc</code> with a JSON body containing your data and formulas.</p>
+
+      <div class="mode-card">
+        <h3>Single Formula Mode</h3>
+        <p class="desc">Apply one formula to a dataset. Returns the computed value.</p>
+        <pre>{
+  <span class="key">"data"</span><span class="punct">:</span> [
+    [<span class="str">"value"</span>],
+    [<span class="num">10</span>],
+    [<span class="num">20</span>],
+    [<span class="num">30</span>]
+  ],
+  <span class="key">"formula"</span><span class="punct">:</span> <span class="str">"=SUM(A2:A4)"</span>
+}</pre>
+      </div>
+
+      <div class="mode-card">
+        <h3>Embedded Formulas Mode</h3>
+        <p class="desc">Place formulas directly in data cells. Returns the full evaluated grid.</p>
+        <pre>{
+  <span class="key">"data"</span><span class="punct">:</span> [
+    [<span class="str">"a"</span>, <span class="str">"b"</span>, <span class="str">"sum"</span>],
+    [<span class="num">1</span>, <span class="num">2</span>, <span class="str">"=A2+B2"</span>],
+    [<span class="num">3</span>, <span class="num">4</span>, <span class="str">"=A3+B3"</span>]
+  ]
+}</pre>
+      </div>
+
+      <div class="return-modes">
+        <h3>Return Modes</h3>
+        <table>
+          <thead>
+            <tr><th>Mode</th><th>Description</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>"grid"</code></td><td>Full dataset with all formulas evaluated</td></tr>
+            <tr><td><code>"value"</code></td><td>Single computed value (default for single formula mode)</td></tr>
+            <tr><td><code>"results"</code></td><td>Only cells that contained formulas, with their computed values</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="footer">
+    Powered by <a href="https://hyperformula.handsontable.com/" target="_blank">HyperFormula</a>
+    &middot; Built by <a href="https://handsontable.com/" target="_blank">Handsontable</a>
+  </div>
+
+  <script>
+    const examples = {
+      sum: {
+        data: [["value"], [10], [20], [30]],
+        formula: "=SUM(A2:A4)"
+      },
+      average: {
+        data: [["score"], [85], [92], [78], [95]],
+        formula: "=AVERAGE(A2:A5)"
+      },
+      conditional: {
+        data: [
+          ["price", "qty", "discount"],
+          [25, 4, 0.1],
+          [30, 2, 0],
+          [15, 10, 0.05]
+        ],
+        formula: '=IF(A2>20, A2*B2*(1-C2), 0)'
+      },
+      embedded: {
+        data: [
+          ["a", "b", "sum"],
+          [1, 2, "=A2+B2"],
+          [3, 4, "=A3+B3"],
+          [5, 6, "=A4+B4"]
+        ]
+      },
+      grid: {
+        data: [
+          ["price", "tax", "total"],
+          [100, 0.08, "=A2*(1+B2)"],
+          [250, 0.1, "=A3*(1+B3)"]
+        ],
+        returnMode: "grid"
+      },
+      results: {
+        data: [
+          ["a", "b", "sum", "product"],
+          [3, 7, "=A2+B2", "=A2*B2"],
+          [5, 9, "=A3+B3", "=A3*B3"]
+        ],
+        returnMode: "results"
+      }
+    };
+
+    function compactJson(obj) {
+      function quote(v) {
+        if (typeof v === 'string') return '"' + v.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+        return String(v);
+      }
+      function row(arr) {
+        return '[' + arr.map(quote).join(', ') + ']';
+      }
+      const lines = ['{'];
+      const keys = Object.keys(obj);
+      keys.forEach((key, ki) => {
+        const val = obj[key];
+        const comma = ki < keys.length - 1 ? ',' : '';
+        if (key === 'data') {
+          lines.push('  "data": [');
+          val.forEach((r, i) => {
+            const rc = i < val.length - 1 ? ',' : '';
+            lines.push('    ' + row(r) + rc);
+          });
+          lines.push('  ]' + comma);
+        } else {
+          lines.push('  "' + key + '": ' + quote(val) + comma);
+        }
+      });
+      lines.push('}');
+      return lines.join('\n');
+    }
+
+    function compactResult(obj, indent) {
+      indent = indent || 0;
+      const pad = '  '.repeat(indent);
+      const pad1 = '  '.repeat(indent + 1);
+      if (Array.isArray(obj)) {
+        if (obj.length === 0) return '[]';
+        // If it's an array of arrays (grid data), keep inner arrays on one line
+        if (Array.isArray(obj[0])) {
+          const rows = obj.map(r => pad1 + JSON.stringify(r));
+          return '[\n' + rows.join(',\n') + '\n' + pad + ']';
+        }
+        // If it's a flat array of primitives, keep on one line
+        if (obj.every(v => v === null || typeof v !== 'object')) {
+          return JSON.stringify(obj);
+        }
+        // Array of objects
+        const items = obj.map(v => pad1 + compactResult(v, indent + 1));
+        return '[\n' + items.join(',\n') + '\n' + pad + ']';
+      }
+      if (obj !== null && typeof obj === 'object') {
+        const entries = Object.entries(obj);
+        if (entries.length === 0) return '{}';
+        const lines = entries.map(([k, v]) => {
+          const val = compactResult(v, indent + 1);
+          return pad1 + JSON.stringify(k) + ': ' + val;
+        });
+        return '{\n' + lines.join(',\n') + '\n' + pad + '}';
+      }
+      return JSON.stringify(obj);
+    }
+
+    function loadExample(name) {
+      document.getElementById("input").value = compactJson(examples[name]);
+      document.querySelectorAll(".examples button").forEach(b => b.classList.remove("active"));
+      event.target.classList.add("active");
+    }
+
+    // Load default
+    loadExample("sum");
+
+    async function run() {
+      const out = document.getElementById("output");
+      out.value = "Evaluating...";
+      try {
+        const res = await fetch("/api/calc", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: document.getElementById("input").value,
+        });
+        const json = await res.json();
+        out.value = compactResult(json);
+      } catch (e) {
+        out.value = "Error: " + e.message;
+      }
+    }
+  </script>
+</body>
+</html>

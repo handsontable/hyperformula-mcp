@@ -1,0 +1,14 @@
+{
+  "name": "hf-edge-calc",
+  "version": "0.1.0",
+  "private": true,
+  "description": "HyperFormula Edge Calc Service — stateless spreadsheet calculation API",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/calc.test.mjs",
+    "dev": "netlify dev --port 8888"
+  },
+  "dependencies": {
+    "hyperformula": "^2.7.1"
+  }
+}
