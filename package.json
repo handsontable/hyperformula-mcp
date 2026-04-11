@@ -9,6 +9,7 @@
     "dev": "netlify dev --port 8888"
   },
   "dependencies": {
-    "hyperformula": "^2.7.1"
+    "hyperformula": "^2.7.1",
+    "posthog-node": "^5.29.2"
   }
 }

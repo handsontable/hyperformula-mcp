@@ -1,4 +1,57 @@
 import { HyperFormula } from "hyperformula";
+import { PostHog } from "posthog-node";
+import { createHash } from "crypto";
+
+// --- Analytics (lazy init) ---
+let posthog = null;
+function getPostHog() {
+  if (!posthog && process.env.POSTHOG_API_KEY) {
+    posthog = new PostHog(process.env.POSTHOG_API_KEY, { flushAt: 1, flushInterval: 0 });
+  }
+  return posthog;
+}
+
+function anonymousId(ip) {
+  return createHash("sha256").update(ip || "unknown").digest("hex").slice(0, 16);
+}
+
+function trackEval(clientIp, body, result) {
+  const ph = getPostHog();
+  if (!ph) return;
+
+  const props = {
+    mode: result.mode,
+    input_type: body.csv !== undefined ? "csv" : "data",
+    headers: !!body.headers,
+    rows: result.meta?.rows,
+    cols: result.meta?.cols,
+    durationMs: result.meta?.durationMs,
+  };
+
+  if (result.mode === "single") {
+    props.formula_count = 1;
+    props.formulas = [body.formula];
+  } else if (result.mode === "multi") {
+    props.formula_count = body.formulas?.length;
+    props.formulas = body.formulas;
+  } else if (result.mode === "grid") {
+    props.formula_count = null;
+    // Skip extracting formulas from embedded data — not worth the complexity
+  } else if (result.mode === "groupBy") {
+    props.formula_count = null;
+    props.groupBy_by = body.groupBy?.by;
+    props.groupBy_aggregates = body.groupBy?.aggregates ? Object.values(body.groupBy.aggregates) : [];
+    props.groupBy_groups = result.meta?.groups;
+  }
+
+  ph.capture({ distinctId: anonymousId(clientIp), event: "calc_evaluated", properties: props });
+}
+
+function trackError(clientIp, errorType) {
+  const ph = getPostHog();
+  if (!ph) return;
+  ph.capture({ distinctId: anonymousId(clientIp), event: "calc_error", properties: { error_type: errorType } });
+}
 
 // --- Limits ---
 const MAX_ROWS = 50_000;
@@ -652,8 +705,10 @@ export async function handler(event) {
 
   try {
     const result = evaluate({ data, formula, formulas, returnMode, sheetName, headers, groupBy });
+    trackEval(clientIp, body, result);
     return { statusCode: 200, headers: h, body: JSON.stringify(result) };
   } catch (err) {
+    trackError(clientIp, err.type || "EVALUATION_ERROR");
     return {
       statusCode: 422,
       headers: h,
