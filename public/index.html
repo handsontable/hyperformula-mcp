@@ -18,37 +18,34 @@
 
     /* Header */
     .header {
-      background: #185aca;
-      color: #fff;
-      padding: 2rem 1rem;
+      background: #fff;
+      color: #222;
+      padding: 1.5rem 1rem;
+      border-bottom: 1px solid #e5e7eb;
     }
     .header-inner {
       max-width: 960px;
       margin: 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+    .header-logo {
+      height: 36px;
     }
     .header h1 {
       font-size: 1.6rem;
       font-weight: 700;
-      margin-bottom: .25rem;
+      margin-bottom: .1rem;
     }
     .header h1 span {
       font-weight: 300;
-      opacity: .85;
+      opacity: .7;
     }
     .header p {
-      font-size: .95rem;
-      opacity: .85;
+      font-size: .85rem;
+      color: #6f6f6f;
       font-weight: 300;
-    }
-    .badge {
-      display: inline-block;
-      margin-top: .75rem;
-      font-size: .7rem;
-      font-weight: 500;
-      background: rgba(255,255,255,.15);
-      padding: .2rem .6rem;
-      border-radius: 3px;
-      letter-spacing: .03em;
     }
 
     /* Main content */
@@ -116,7 +113,7 @@
       padding: .75rem;
       border: 1px solid #d0d5dd;
       border-radius: 8px;
-      resize: vertical;
+      resize: none;
       line-height: 1.5;
       transition: border-color .15s;
     }
@@ -125,8 +122,26 @@
       border-color: #104acc;
       box-shadow: 0 0 0 3px rgba(16, 74, 204, .1);
     }
-    #input { height: 240px; }
-    #output { height: 240px; background: #f9fafb; color: #222; }
+    #input { height: 320px; }
+    #output {
+      height: 320px;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      overflow: auto;
+      padding: .75rem;
+      border: 1px solid #d0d5dd;
+      border-radius: 8px;
+      font-family: 'SF Mono', 'Fira Code', 'Fira Mono', Menlo, monospace;
+      font-size: .82rem;
+      line-height: 1.5;
+      white-space: pre;
+    }
+    #output .hl-key { color: #7ec8e3; }
+    #output .hl-str { color: #a8d8a8; }
+    #output .hl-num { color: #f0c674; }
+    #output .hl-bool { color: #cc99cd; }
+    #output .hl-null { color: #888; }
+    #output .hl-punct { color: #888; }
 
     .btn-evaluate {
       margin-top: .75rem;
@@ -257,22 +272,29 @@
 
   <div class="header">
     <div class="header-inner">
-      <h1>HyperFormula Edge Calc <span>Service</span></h1>
-      <p>Stateless spreadsheet calculations via HTTP. Formulas instead of code.</p>
-      <span class="badge">Powered by HyperFormula</span>
+      <img src="https://hyperformula.handsontable.com/logo.png" alt="HyperFormula" class="header-logo">
+      <div>
+        <h1>HyperFormula Edge Calc <span>Service</span></h1>
+        <p>Stateless spreadsheet calculations via HTTP. Formulas instead of code.</p>
+      </div>
     </div>
   </div>
 
   <div class="container">
 
-    <label>Load Example</label>
+    <p style="font-size:.9rem;color:#444;margin-bottom:.5rem;line-height:1.7">
+      Send data and spreadsheet formulas to <code style="background:#eef2ff;color:#104acc;padding:.1rem .35rem;border-radius:3px;font-size:.82rem">POST /api/calc</code> and get computed results back as JSON.
+      Accepts raw CSV or JSON arrays. Supports 400+ Excel-compatible functions, named columns, and declarative groupBy aggregation.
+      Up to 50,000 rows per request.
+    </p>
+
+    <label style="margin-top:1rem">Try it</label>
     <div class="examples">
-      <button class="active" onclick="loadExample('sum')">SUM formula</button>
-      <button onclick="loadExample('average')">AVERAGE</button>
-      <button onclick="loadExample('conditional')">IF / conditional</button>
-      <button onclick="loadExample('embedded')">Embedded formulas</button>
-      <button onclick="loadExample('grid')">Full grid return</button>
-      <button onclick="loadExample('results')">Results only</button>
+      <button class="active" onclick="loadExample('simple')">Simple SUM</button>
+      <button onclick="loadExample('multi')">Multi-Formula</button>
+      <button onclick="loadExample('csv_named')">CSV + Named Columns</button>
+      <button onclick="loadExample('groupby')">GroupBy</button>
+      <button onclick="loadExample('embedded')">Embedded Formulas</button>
     </div>
 
     <div class="editor-row">
@@ -282,8 +304,8 @@
         <button class="btn-evaluate" onclick="run()">Evaluate</button>
       </div>
       <div>
-        <label for="output">Response</label>
-        <textarea id="output" readonly></textarea>
+        <label>Response</label>
+        <div id="output"></div>
       </div>
     </div>
 
@@ -291,44 +313,62 @@
 
     <div class="usage">
       <h2>Usage</h2>
-      <p>Send a POST to <code style="background:#eef2ff;color:#104acc;padding:.1rem .35rem;border-radius:3px;font-size:.82rem">/api/calc</code> with a JSON body containing your data and formulas.</p>
+      <p>Send a POST to <code style="background:#eef2ff;color:#104acc;padding:.1rem .35rem;border-radius:3px;font-size:.82rem">/api/calc</code> with a JSON body. Use <code style="background:#eef2ff;color:#104acc;padding:.1rem .35rem;border-radius:3px;font-size:.82rem">GET /api/calc</code> for the full machine-readable API schema.</p>
 
       <div class="mode-card">
-        <h3>Single Formula Mode</h3>
-        <p class="desc">Apply one formula to a dataset. Returns the computed value.</p>
+        <h3>CSV + Named Columns</h3>
+        <p class="desc">Pass raw CSV via the <code>csv</code> field. With <code>headers: true</code>, column names become usable in formulas.</p>
         <pre>{
-  <span class="key">"data"</span><span class="punct">:</span> [
-    [<span class="str">"value"</span>],
-    [<span class="num">10</span>],
-    [<span class="num">20</span>],
-    [<span class="num">30</span>]
-  ],
-  <span class="key">"formula"</span><span class="punct">:</span> <span class="str">"=SUM(A2:A4)"</span>
+  <span class="key">"csv"</span><span class="punct">:</span> <span class="str">"Region,Revenue,Cost\nEurope,1000,800\nAsia,2000,1500"</span>,
+  <span class="key">"headers"</span><span class="punct">:</span> <span class="num">true</span>,
+  <span class="key">"formulas"</span><span class="punct">:</span> [<span class="str">"=SUM(Revenue)"</span>, <span class="str">"=SUM(Revenue)-SUM(Cost)"</span>]
 }</pre>
       </div>
 
       <div class="mode-card">
-        <h3>Embedded Formulas Mode</h3>
+        <h3>GroupBy Aggregation</h3>
+        <p class="desc">Declarative grouping with SUM, AVERAGE, COUNT, MIN, MAX, or MEDIAN per column. Requires <code>headers: true</code>.</p>
+        <pre>{
+  <span class="key">"csv"</span><span class="punct">:</span> <span class="str">"Region,Revenue,Units\nEurope,1000,5\n..."</span>,
+  <span class="key">"headers"</span><span class="punct">:</span> <span class="num">true</span>,
+  <span class="key">"groupBy"</span><span class="punct">:</span> {
+    <span class="key">"by"</span><span class="punct">:</span> <span class="str">"Region"</span>,
+    <span class="key">"aggregates"</span><span class="punct">:</span> { <span class="key">"Revenue"</span><span class="punct">:</span> <span class="str">"SUM"</span>, <span class="key">"Units"</span><span class="punct">:</span> <span class="str">"AVERAGE"</span> }
+  }
+}</pre>
+      </div>
+
+      <div class="mode-card">
+        <h3>Multi-Formula Mode</h3>
+        <p class="desc">Evaluate multiple formulas in one request. Works with <code>data</code> (JSON arrays) or <code>csv</code>.</p>
+        <pre>{
+  <span class="key">"data"</span><span class="punct">:</span> [[<span class="num">10</span>, <span class="num">20</span>], [<span class="num">30</span>, <span class="num">40</span>]],
+  <span class="key">"formulas"</span><span class="punct">:</span> [<span class="str">"=SUM(A1:A2)"</span>, <span class="str">"=AVERAGE(A1:B2)"</span>]
+}</pre>
+      </div>
+
+      <div class="mode-card">
+        <h3>Embedded Formulas</h3>
         <p class="desc">Place formulas directly in data cells. Returns the full evaluated grid.</p>
         <pre>{
-  <span class="key">"data"</span><span class="punct">:</span> [
-    [<span class="str">"a"</span>, <span class="str">"b"</span>, <span class="str">"sum"</span>],
-    [<span class="num">1</span>, <span class="num">2</span>, <span class="str">"=A2+B2"</span>],
-    [<span class="num">3</span>, <span class="num">4</span>, <span class="str">"=A3+B3"</span>]
-  ]
+  <span class="key">"data"</span><span class="punct">:</span> [[<span class="str">"a"</span>, <span class="str">"b"</span>, <span class="str">"sum"</span>], [<span class="num">1</span>, <span class="num">2</span>, <span class="str">"=A2+B2"</span>], [<span class="num">3</span>, <span class="num">4</span>, <span class="str">"=A3+B3"</span>]]
 }</pre>
       </div>
 
       <div class="return-modes">
-        <h3>Return Modes</h3>
+        <h3>Parameters</h3>
         <table>
           <thead>
-            <tr><th>Mode</th><th>Description</th></tr>
+            <tr><th>Param</th><th>Description</th></tr>
           </thead>
           <tbody>
-            <tr><td><code>"grid"</code></td><td>Full dataset with all formulas evaluated</td></tr>
-            <tr><td><code>"value"</code></td><td>Single computed value (default for single formula mode)</td></tr>
-            <tr><td><code>"results"</code></td><td>Only cells that contained formulas, with their computed values</td></tr>
+            <tr><td><code>csv</code></td><td>Raw CSV string (alternative to <code>data</code>). Numeric values auto-detected.</td></tr>
+            <tr><td><code>data</code></td><td>2D JSON array (alternative to <code>csv</code>).</td></tr>
+            <tr><td><code>headers</code></td><td>When <code>true</code>, row 1 = column names usable in formulas.</td></tr>
+            <tr><td><code>formula</code></td><td>Single formula string. Returns one value.</td></tr>
+            <tr><td><code>formulas</code></td><td>Array of formulas. Returns array of values.</td></tr>
+            <tr><td><code>groupBy</code></td><td>Declarative aggregation: <code>{by, aggregates}</code>. Requires <code>headers</code>.</td></tr>
+            <tr><td><code>returnMode</code></td><td><code>"value"</code>, <code>"grid"</code>, or <code>"results"</code>.</td></tr>
           </tbody>
         </table>
       </div>
@@ -343,71 +383,71 @@
 
   <script>
     const examples = {
-      sum: {
-        data: [["value"], [10], [20], [30]],
-        formula: "=SUM(A2:A4)"
+      simple: {
+        data: [[10], [20], [30]],
+        formula: "=SUM(A1:A3)"
       },
-      average: {
-        data: [["score"], [85], [92], [78], [95]],
-        formula: "=AVERAGE(A2:A5)"
+      multi: {
+        data: [[10, 20], [30, 40]],
+        formulas: ["=SUM(A1:A2)", "=SUM(B1:B2)", "=AVERAGE(A1:B2)"]
       },
-      conditional: {
-        data: [
-          ["price", "qty", "discount"],
-          [25, 4, 0.1],
-          [30, 2, 0],
-          [15, 10, 0.05]
-        ],
-        formula: '=IF(A2>20, A2*B2*(1-C2), 0)'
+      csv_named: {
+        csv: "name,score\nAlice,85\nBob,92\nCarol,78",
+        headers: true,
+        formulas: ["=SUM(score)", "=AVERAGE(score)", "=MAX(score)"]
+      },
+      groupby: {
+        csv: "Region,Revenue,Units\nEurope,1000,50\nAsia,2000,80\nEurope,1500,30",
+        headers: true,
+        groupBy: { by: "Region", aggregates: { Revenue: "SUM", Units: "SUM" } }
       },
       embedded: {
-        data: [
-          ["a", "b", "sum"],
-          [1, 2, "=A2+B2"],
-          [3, 4, "=A3+B3"],
-          [5, 6, "=A4+B4"]
-        ]
-      },
-      grid: {
-        data: [
-          ["price", "tax", "total"],
-          [100, 0.08, "=A2*(1+B2)"],
-          [250, 0.1, "=A3*(1+B3)"]
-        ],
-        returnMode: "grid"
-      },
-      results: {
-        data: [
-          ["a", "b", "sum", "product"],
-          [3, 7, "=A2+B2", "=A2*B2"],
-          [5, 9, "=A3+B3", "=A3*B3"]
-        ],
-        returnMode: "results"
+        data: [["a", "b", "sum"], [1, 2, "=A2+B2"], [3, 4, "=A3+B3"]],
       }
     };
 
     function compactJson(obj) {
-      function quote(v) {
-        if (typeof v === 'string') return '"' + v.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
-        return String(v);
+      function fmtInline(val) {
+        if (val === null) return 'null';
+        if (typeof val !== 'object') return JSON.stringify(val);
+        if (Array.isArray(val)) return '[' + val.map(fmtInline).join(', ') + ']';
+        const entries = Object.entries(val).map(([k,v]) => JSON.stringify(k) + ': ' + fmtInline(v));
+        return '{ ' + entries.join(', ') + ' }';
       }
-      function row(arr) {
-        return '[' + arr.map(quote).join(', ') + ']';
-      }
+
       const lines = ['{'];
       const keys = Object.keys(obj);
-      keys.forEach((key, ki) => {
+      keys.forEach((key, i) => {
         const val = obj[key];
-        const comma = ki < keys.length - 1 ? ',' : '';
-        if (key === 'data') {
+        const comma = i < keys.length - 1 ? ',' : '';
+
+        if (key === 'data' && Array.isArray(val)) {
+          // Each row on its own line
           lines.push('  "data": [');
-          val.forEach((r, i) => {
-            const rc = i < val.length - 1 ? ',' : '';
-            lines.push('    ' + row(r) + rc);
+          val.forEach((row, ri) => {
+            const rc = ri < val.length - 1 ? ',' : '';
+            lines.push('    ' + fmtInline(row) + rc);
           });
           lines.push('  ]' + comma);
+        } else if (key === 'formulas' && Array.isArray(val)) {
+          // Each formula on its own line
+          lines.push('  "formulas": [');
+          val.forEach((f, fi) => {
+            const fc = fi < val.length - 1 ? ',' : '';
+            lines.push('    ' + JSON.stringify(f) + fc);
+          });
+          lines.push('  ]' + comma);
+        } else if (typeof val === 'object' && val !== null && !Array.isArray(val)) {
+          // Objects get their own block with each key on a line
+          lines.push('  ' + JSON.stringify(key) + ': {');
+          const entries = Object.entries(val);
+          entries.forEach(([k, v], ei) => {
+            const ec = ei < entries.length - 1 ? ',' : '';
+            lines.push('    ' + JSON.stringify(k) + ': ' + fmtInline(v) + ec);
+          });
+          lines.push('  }' + comma);
         } else {
-          lines.push('  "' + key + '": ' + quote(val) + comma);
+          lines.push('  ' + JSON.stringify(key) + ': ' + fmtInline(val) + comma);
         }
       });
       lines.push('}');
@@ -445,18 +485,32 @@
       return JSON.stringify(obj);
     }
 
+    function highlightJson(str) {
+      return str
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"([^"\\]*(\\.[^"\\]*)*)"(\s*:)?/g, function(match, content, _, colon) {
+          if (colon) return '<span class="hl-key">"' + content + '"</span>' + colon;
+          return '<span class="hl-str">"' + content + '"</span>';
+        })
+        .replace(/\b(-?\d+\.?\d*([eE][+-]?\d+)?)\b/g, '<span class="hl-num">$1</span>')
+        .replace(/\b(true|false)\b/g, '<span class="hl-bool">$1</span>')
+        .replace(/\bnull\b/g, '<span class="hl-null">null</span>');
+    }
+
     function loadExample(name) {
       document.getElementById("input").value = compactJson(examples[name]);
       document.querySelectorAll(".examples button").forEach(b => b.classList.remove("active"));
       event.target.classList.add("active");
+      run();
     }
 
     // Load default
-    loadExample("sum");
+    document.getElementById("input").value = compactJson(examples["simple"]);
+    run();
 
     async function run() {
       const out = document.getElementById("output");
-      out.value = "Evaluating...";
+      out.innerHTML = '<span class="hl-null">Evaluating...</span>';
       try {
         const res = await fetch("/api/calc", {
           method: "POST",
@@ -464,9 +518,9 @@
           body: document.getElementById("input").value,
         });
         const json = await res.json();
-        out.value = compactResult(json);
+        out.innerHTML = highlightJson(compactResult(json));
       } catch (e) {
-        out.value = "Error: " + e.message;
+        out.innerHTML = '<span class="hl-str">Error: ' + e.message + '</span>';
       }
     }
   </script>

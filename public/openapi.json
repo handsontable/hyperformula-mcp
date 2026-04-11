@@ -1,0 +1,162 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "HyperFormula Edge Calc Service",
+    "version": "0.3.0",
+    "description": "Stateless spreadsheet calculation API. Send data (JSON arrays or CSV strings) and formulas via HTTP, get computed results. Supports 400+ Excel-compatible functions, named columns via headers, and declarative groupBy aggregation. Ideal for AI agents."
+  },
+  "servers": [
+    { "url": "/" }
+  ],
+  "paths": {
+    "/api/calc": {
+      "get": {
+        "operationId": "getApiSchema",
+        "summary": "Get API schema and documentation",
+        "description": "Returns a JSON object describing all parameters, modes, examples, supported formulas, and rate limits. Useful for AI agents to discover the API.",
+        "responses": {
+          "200": {
+            "description": "API schema",
+            "content": { "application/json": {} }
+          }
+        }
+      },
+      "post": {
+        "operationId": "evaluate",
+        "summary": "Evaluate spreadsheet formulas against data",
+        "description": "Send data (as 2D JSON array or CSV string) with formulas. Supports named columns (headers:true) and declarative groupBy aggregation. Five modes: single formula, multi formulas, embedded formulas, groupBy.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CalcRequest" },
+              "examples": {
+                "csv_named_columns": {
+                  "summary": "CSV with named columns (recommended for AI)",
+                  "value": {
+                    "csv": "name,score\nAlice,85\nBob,92\nCarol,78",
+                    "headers": true,
+                    "formulas": ["=SUM(score)", "=AVERAGE(score)", "=MAX(score)"]
+                  }
+                },
+                "groupBy": {
+                  "summary": "GroupBy aggregation",
+                  "value": {
+                    "csv": "Region,Revenue,Units\nEurope,1000,5\nAsia,2000,3\nEurope,1500,8",
+                    "headers": true,
+                    "groupBy": { "by": "Region", "aggregates": { "Revenue": "SUM", "Units": "SUM" } }
+                  }
+                },
+                "single": {
+                  "summary": "Single formula with JSON data",
+                  "value": {
+                    "data": [["revenue"], [1000], [2500], [800]],
+                    "formula": "=SUM(A2:A4)"
+                  }
+                },
+                "multi": {
+                  "summary": "Multiple formulas",
+                  "value": {
+                    "data": [[10, 20], [30, 40]],
+                    "formulas": ["=SUM(A1:A2)", "=SUM(B1:B2)", "=AVERAGE(A1:B2)"]
+                  }
+                },
+                "embedded": {
+                  "summary": "Embedded formulas in data cells",
+                  "value": {
+                    "data": [["a", "b", "sum"], [1, 2, "=A2+B2"], [3, 4, "=A3+B3"]]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful evaluation",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/CalcResponse" }
+              }
+            }
+          },
+          "400": { "description": "Validation error (bad data, invalid formula, etc.)" },
+          "413": { "description": "Payload too large (max 50MB)" },
+          "422": { "description": "Formula evaluation error" },
+          "429": { "description": "Rate limit exceeded (60 requests/minute)" }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CalcRequest": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": { "type": "array", "items": {} },
+            "description": "2D array of cell values. Mutually exclusive with 'csv'."
+          },
+          "csv": {
+            "type": "string",
+            "description": "Raw CSV string, parsed server-side. Numeric values auto-detected. Mutually exclusive with 'data'. Easiest input method for AI agents."
+          },
+          "headers": {
+            "type": "boolean",
+            "description": "When true, row 1 = column names. Enables named expressions so formulas can use column names (e.g. =SUM(Revenue)). Required for groupBy."
+          },
+          "formula": {
+            "type": "string",
+            "description": "Single global formula. Mutually exclusive with 'formulas' and 'groupBy'."
+          },
+          "formulas": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Array of global formulas, evaluated in one pass. Mutually exclusive with 'formula' and 'groupBy'."
+          },
+          "groupBy": {
+            "type": "object",
+            "description": "Declarative aggregation. Requires headers:true. Mutually exclusive with formula/formulas.",
+            "properties": {
+              "by": { "type": "string", "description": "Column name to group by." },
+              "aggregates": {
+                "type": "object",
+                "additionalProperties": { "type": "string", "enum": ["SUM", "AVERAGE", "COUNT", "MIN", "MAX", "MEDIAN"] },
+                "description": "Map of column name to aggregate function."
+              }
+            },
+            "required": ["by", "aggregates"]
+          },
+          "returnMode": {
+            "type": "string",
+            "enum": ["value", "grid", "results"],
+            "description": "'value' = scalar(s), 'grid' = full evaluated grid, 'results' = only formula cells."
+          },
+          "sheetName": {
+            "type": "string",
+            "description": "Sheet name (default: 'Sheet1')."
+          }
+        }
+      },
+      "CalcResponse": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean" },
+          "mode": { "type": "string", "enum": ["single", "multi", "grid", "groupBy"] },
+          "result": { "description": "Scalar, array, 2D grid, or array of group objects depending on mode." },
+          "meta": {
+            "type": "object",
+            "properties": {
+              "rows": { "type": "integer" },
+              "cols": { "type": "integer" },
+              "groups": { "type": "integer", "description": "Number of groups (groupBy mode only)" },
+              "durationMs": { "type": "integer" },
+              "columns": { "type": "object", "description": "Column name mapping (when headers:true)" }
+            }
+          }
+        }
+      }
+    }
+  }
+}
