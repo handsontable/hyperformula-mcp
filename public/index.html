@@ -291,7 +291,7 @@
     <label style="margin-top:1rem">Try it</label>
     <div class="examples">
       <button class="active" onclick="loadExample('simple')">Simple SUM</button>
-      <button onclick="loadExample('multi')">Multi-Formula</button>
+      <button onclick="loadExample('formulas')">Multiple Formulas</button>
       <button onclick="loadExample('csv_named')">CSV + Named Columns</button>
       <button onclick="loadExample('groupby')">GroupBy</button>
       <button onclick="loadExample('embedded')">Embedded Formulas</button>
@@ -365,10 +365,8 @@
             <tr><td><code>csv</code></td><td>Raw CSV string (alternative to <code>data</code>). Numeric values auto-detected.</td></tr>
             <tr><td><code>data</code></td><td>2D JSON array (alternative to <code>csv</code>).</td></tr>
             <tr><td><code>headers</code></td><td>When <code>true</code>, row 1 = column names usable in formulas.</td></tr>
-            <tr><td><code>formula</code></td><td>Single formula string. Returns one value.</td></tr>
             <tr><td><code>formulas</code></td><td>Array of formulas. Returns array of values.</td></tr>
             <tr><td><code>groupBy</code></td><td>Declarative aggregation: <code>{by, aggregates}</code>. Requires <code>headers</code>.</td></tr>
-            <tr><td><code>returnMode</code></td><td><code>"value"</code>, <code>"grid"</code>, or <code>"results"</code>.</td></tr>
           </tbody>
         </table>
       </div>
@@ -387,9 +385,9 @@
     const examples = {
       simple: {
         data: [[10], [20], [30]],
-        formula: "=SUM(A1:A3)"
+        formulas: ["=SUM(A1:A3)"]
       },
-      multi: {
+      formulas: {
         data: [[10, 20], [30, 40]],
         formulas: ["=SUM(A1:A2)", "=SUM(B1:B2)", "=AVERAGE(A1:B2)"]
       },

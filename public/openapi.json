@@ -47,15 +47,8 @@
                     "groupBy": { "by": "Region", "aggregates": { "Revenue": "SUM", "Units": "SUM" } }
                   }
                 },
-                "single": {
-                  "summary": "Single formula with JSON data",
-                  "value": {
-                    "data": [["revenue"], [1000], [2500], [800]],
-                    "formula": "=SUM(A2:A4)"
-                  }
-                },
-                "multi": {
-                  "summary": "Multiple formulas",
+                "formulas": {
+                  "summary": "Formulas with JSON data",
                   "value": {
                     "data": [[10, 20], [30, 40]],
                     "formulas": ["=SUM(A1:A2)", "=SUM(B1:B2)", "=AVERAGE(A1:B2)"]
@@ -106,18 +99,14 @@
             "type": "boolean",
             "description": "When true, row 1 = column names. Enables named expressions so formulas can use column names (e.g. =SUM(Revenue)). Required for groupBy."
           },
-          "formula": {
-            "type": "string",
-            "description": "Single global formula. Mutually exclusive with 'formulas' and 'groupBy'."
-          },
           "formulas": {
             "type": "array",
             "items": { "type": "string" },
-            "description": "Array of global formulas, evaluated in one pass. Mutually exclusive with 'formula' and 'groupBy'."
+            "description": "Array of formulas (each starting with '='). Evaluated in one pass. Returns array of results. Mutually exclusive with 'groupBy'."
           },
           "groupBy": {
             "type": "object",
-            "description": "Declarative aggregation. Requires headers:true. Mutually exclusive with formula/formulas.",
+            "description": "Declarative aggregation. Requires headers:true. Mutually exclusive with formulas.",
             "properties": {
               "by": { "type": "string", "description": "Column name to group by." },
               "aggregates": {
@@ -128,23 +117,14 @@
             },
             "required": ["by", "aggregates"]
           },
-          "returnMode": {
-            "type": "string",
-            "enum": ["value", "grid", "results"],
-            "description": "'value' = scalar(s), 'grid' = full evaluated grid, 'results' = only formula cells."
-          },
-          "sheetName": {
-            "type": "string",
-            "description": "Sheet name (default: 'Sheet1')."
-          }
         }
       },
       "CalcResponse": {
         "type": "object",
         "properties": {
           "success": { "type": "boolean" },
-          "mode": { "type": "string", "enum": ["single", "multi", "grid", "groupBy"] },
-          "result": { "description": "Scalar, array, 2D grid, or array of group objects depending on mode." },
+          "mode": { "type": "string", "enum": ["formulas", "grid", "groupBy"] },
+          "result": { "description": "Array of values (formulas), 2D grid (embedded), or array of group objects (groupBy)." },
           "meta": {
             "type": "object",
             "properties": {

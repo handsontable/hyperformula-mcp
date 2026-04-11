@@ -28,17 +28,12 @@ function trackEval(clientIp, body, result) {
     durationMs: result.meta?.durationMs,
   };
 
-  if (result.mode === "single") {
-    props.formula_count = 1;
-    props.formulas = [body.formula];
-  } else if (result.mode === "multi") {
+  if (result.mode === "formulas") {
     props.formula_count = body.formulas?.length;
     props.formulas = body.formulas;
   } else if (result.mode === "grid") {
-    props.formula_count = null;
     // Skip extracting formulas from embedded data — not worth the complexity
   } else if (result.mode === "groupBy") {
-    props.formula_count = null;
     props.groupBy_by = body.groupBy?.by;
     props.groupBy_aggregates = body.groupBy?.aggregates ? Object.values(body.groupBy.aggregates) : [];
     props.groupBy_groups = result.meta?.groups;
@@ -203,8 +198,8 @@ function sanitizeName(name) {
   return s;
 }
 
-function evaluate({ data, formula, formulas, returnMode, sheetName, headers, groupBy }) {
-  const name = sheetName || "Sheet1";
+function evaluate({ data, formulas, headers, groupBy }) {
+  const name = "Sheet1";
   const normalized = normalizeData(data);
   const startMs = Date.now();
 
@@ -227,112 +222,46 @@ function evaluate({ data, formula, formulas, returnMode, sheetName, headers, gro
       const colName = String(raw);
       const safeName = sanitizeName(colName);
       const col = colToLetter(c);
-      // Named expression covers data rows (row 2 to end, 1-indexed)
       const expr = `=${name}!$${col}$2:$${col}$${dataRows}`;
       try {
         hf.addNamedExpression(safeName, expr);
       } catch (_) { /* skip if name conflicts with built-in */ }
       const entry = { letter: col, index: c, namedExpression: safeName };
       columnMap[colName] = entry;
-      // Also index by sanitized name for convenience (e.g. "Total_Revenue" finds "Total Revenue")
       if (safeName !== colName) columnMap[safeName] = entry;
     }
   }
 
-  // GroupBy mode
-  if (groupBy) {
-    const result = evaluateGroupBy(hf, sheetId, normalized, columnMap, groupBy, name);
-    const durationMs = Date.now() - startMs;
-    hf.destroy();
-    return {
-      success: true,
-      mode: "groupBy",
-      result,
-      meta: { groups: result.length, rows: normalized.length - 1, cols: normalized[0]?.length || 0, durationMs, columns: columnMap },
-    };
-  }
-
-  // Determine mode
-  const isSingleFormula = typeof formula === "string" && formula.startsWith("=");
-  const isMultiFormula = Array.isArray(formulas) && formulas.length > 0;
-
   let mode, result;
 
-  if (isMultiFormula) {
-    // Place each formula in successive temp cells beyond the data area
+  if (groupBy) {
+    // GroupBy mode
+    result = evaluateGroupBy(hf, sheetId, normalized, columnMap, groupBy, name);
+    mode = "groupBy";
+  } else if (Array.isArray(formulas) && formulas.length > 0) {
+    // Formulas mode — always returns an array
     const formulaRow = normalized.length;
+    for (let i = 0; i < formulas.length; i++) {
+      hf.setCellContents({ sheet: sheetId, row: formulaRow, col: i }, [[formulas[i]]]);
+    }
     const results = [];
-
     for (let i = 0; i < formulas.length; i++) {
-      hf.setCellContents(
-        { sheet: sheetId, row: formulaRow, col: i },
-        [[formulas[i]]]
-      );
+      results.push(unwrapValue(hf.getCellValue({ sheet: sheetId, row: formulaRow, col: i })));
     }
-
-    for (let i = 0; i < formulas.length; i++) {
-      const raw = hf.getCellValue({ sheet: sheetId, row: formulaRow, col: i });
-      results.push(unwrapValue(raw));
-    }
-
-    mode = "multi";
+    mode = "formulas";
     result = results;
-  } else if (isSingleFormula) {
-    // Place formula in a temp cell beyond the data area
-    const formulaRow = normalized.length;
-    const formulaCol = 0;
-    hf.setCellContents(
-      { sheet: sheetId, row: formulaRow, col: formulaCol },
-      [[formula]]
-    );
-    const raw = hf.getCellValue({ sheet: sheetId, row: formulaRow, col: formulaCol });
-
-    // Check for HyperFormula error objects
-    if (raw !== null && typeof raw === "object" && raw.type !== undefined) {
-      throw { type: "FORMULA_ERROR", message: String(raw.value ?? raw), details: formula };
-    }
-
-    mode = "single";
-    const effectiveReturn = returnMode || "value";
-
-    if (effectiveReturn === "value") {
-      result = raw;
-    } else if (effectiveReturn === "grid") {
-      result = extractGrid(hf, sheetId, normalized.length, normalized[0].length);
-    } else if (effectiveReturn === "results") {
-      result = raw;
-    } else {
-      result = raw;
-    }
   } else {
-    // Embedded formula mode — evaluate the full grid
+    // Embedded formula mode — return the full evaluated grid
     mode = "grid";
-    const rows = normalized.length;
-    const cols = normalized[0]?.length || 0;
-    const effectiveReturn = returnMode || "grid";
-
-    if (effectiveReturn === "grid") {
-      result = extractGrid(hf, sheetId, rows, cols);
-    } else if (effectiveReturn === "results") {
-      result = extractResults(hf, sheetId, normalized);
-    } else if (effectiveReturn === "value") {
-      // Not very meaningful for embedded mode, but return full grid
-      result = extractGrid(hf, sheetId, rows, cols);
-    } else {
-      result = extractGrid(hf, sheetId, rows, cols);
-    }
+    result = extractGrid(hf, sheetId, normalized.length, normalized[0]?.length || 0);
   }
 
   const durationMs = Date.now() - startMs;
-
   hf.destroy();
 
-  const meta = {
-    rows: normalized.length,
-    cols: normalized[0]?.length || 0,
-    durationMs,
-  };
+  const meta = { rows: normalized.length, cols: normalized[0]?.length || 0, durationMs };
   if (columnMap) meta.columns = columnMap;
+  if (mode === "groupBy") meta.groups = result.length;
 
   return { success: true, mode, result, meta };
 }
@@ -450,20 +379,6 @@ function extractGrid(hf, sheetId, rows, cols) {
   return grid;
 }
 
-function extractResults(hf, sheetId, normalized) {
-  // Return cells that were formulas in the input
-  const results = [];
-  for (let r = 0; r < normalized.length; r++) {
-    for (let c = 0; c < normalized[r].length; c++) {
-      const orig = normalized[r][c];
-      if (typeof orig === "string" && orig.startsWith("=")) {
-        const v = hf.getCellValue({ sheet: sheetId, row: r, col: c });
-        results.push({ row: r, col: c, value: unwrapValue(v) });
-      }
-    }
-  }
-  return results;
-}
 
 function unwrapValue(v) {
   if (v !== null && typeof v === "object" && v.type !== undefined) {
@@ -493,67 +408,40 @@ const API_SCHEMA = {
     csv: {
       type: "string",
       required: "one of data or csv is required",
-      description: "Raw CSV string. Parsed server-side into a 2D grid. Numeric values are auto-detected. Supports quoted fields with commas and newlines. Mutually exclusive with 'data'. This is the easiest way for AI agents to send data.",
+      description: "Raw CSV string. Parsed server-side into a 2D grid. Numeric values auto-detected. Supports quoted fields. Mutually exclusive with 'data'. Easiest way for AI agents to send data.",
       example: "Region,Revenue,Cost\nEurope,1000,800\nAsia,2000,1500",
     },
     headers: {
       type: "boolean",
       required: false,
-      description: "When true, row 1 is treated as column names. Named expressions are created so formulas can reference columns by name (e.g. =SUM(Revenue) instead of =SUM(B2:B100)). Column names with spaces/special chars are sanitized to valid identifiers (spaces→underscores). The response meta.columns shows the mapping.",
-    },
-    formula: {
-      type: "string",
-      required: false,
-      description: "A single global formula starting with '='. Returns a scalar value. Mutually exclusive with 'formulas' and 'groupBy'.",
-      example: "=SUM(A1:A100)",
+      description: "When true, row 1 is treated as column names. Formulas can reference columns by name (e.g. =SUM(Revenue)). Column names with spaces are sanitized (spaces→underscores). Response meta.columns shows the mapping. Required for groupBy.",
     },
     formulas: {
       type: "array of strings",
       required: false,
-      description: "Array of global formulas. All evaluated in one pass. Returns array of results. Mutually exclusive with 'formula' and 'groupBy'. With headers:true, use column names directly: =SUM(Revenue).",
+      description: "Array of formulas (each starting with '='). All evaluated in one pass. Returns array of results in same order. Mutually exclusive with 'groupBy'. With headers:true, use column names directly.",
       example: ["=SUM(Revenue)", "=AVERAGE(Cost)", "=COUNTIF(Region,\"Europe\")"],
     },
     groupBy: {
       type: "object",
       required: false,
-      description: "Declarative aggregation mode. Groups data by a column and computes aggregates per group. Requires headers:true. Mutually exclusive with formula/formulas. Returns array of {group, ...aggregates} objects.",
+      description: "Declarative aggregation. Groups data by a column and computes aggregates per group. Requires headers:true. Mutually exclusive with formulas. Returns array of {group, ...aggregates} objects.",
       properties: {
         by: { type: "string", description: "Column name to group by" },
         aggregates: { type: "object", description: "Map of column name → aggregate function. Supported: SUM, AVERAGE, COUNT, MIN, MAX, MEDIAN" },
       },
-      example: { by: "Region", aggregates: { Revenue: "SUM", Units: "SUM", Unit_Price: "AVERAGE" } },
-    },
-    returnMode: {
-      type: "string",
-      required: false,
-      enum: ["value", "grid", "results"],
-      description: "'value' returns scalar (default for formula/formulas). 'grid' returns the full evaluated grid. 'results' returns only formula cells.",
-    },
-    sheetName: {
-      type: "string",
-      required: false,
-      description: "Sheet name (default: 'Sheet1').",
+      example: { by: "Region", aggregates: { Revenue: "SUM", Units: "SUM" } },
     },
   },
   modes: {
-    single: { description: "One formula, one result", params: "data + formula" },
-    multi: { description: "Multiple formulas, array of results", params: "data + formulas" },
-    embedded: { description: "Formulas in data cells, full grid returned", params: "data (with formulas in cells)" },
+    formulas: { description: "Evaluate formulas, get array of results", params: "data/csv + formulas" },
+    grid: { description: "Embedded formulas in data cells, returns full evaluated grid", params: "data/csv (with '=' formulas in cells)" },
     groupBy: { description: "Declarative aggregation by groups", params: "csv/data + headers:true + groupBy" },
   },
   examples: {
-    csv_with_named_columns: {
-      csv: "name,score\nAlice,85\nBob,92\nCarol,78",
-      headers: true,
-      formulas: ["=SUM(score)", "=AVERAGE(score)", "=MAX(score)"],
-    },
-    groupBy: {
-      csv: "Region,Revenue,Units\nEurope,1000,5\nAsia,2000,3\nEurope,1500,8",
-      headers: true,
-      groupBy: { by: "Region", aggregates: { Revenue: "SUM", Units: "SUM" } },
-    },
-    single: { data: [["revenue"], [1000], [2500], [800]], formula: "=SUM(A2:A4)" },
-    multi: { data: [[10, 20], [30, 40]], formulas: ["=SUM(A1:A2)", "=SUM(B1:B2)", "=AVERAGE(A1:B2)"] },
+    formulas: { data: [[10, 20], [30, 40]], formulas: ["=SUM(A1:A2)", "=SUM(B1:B2)", "=AVERAGE(A1:B2)"] },
+    csv_with_named_columns: { csv: "name,score\nAlice,85\nBob,92\nCarol,78", headers: true, formulas: ["=SUM(score)", "=AVERAGE(score)"] },
+    groupBy: { csv: "Region,Revenue,Units\nEurope,1000,5\nAsia,2000,3\nEurope,1500,8", headers: true, groupBy: { by: "Region", aggregates: { Revenue: "SUM", Units: "SUM" } } },
     embedded: { data: [["a", "b", "sum"], [1, 2, "=A2+B2"], [3, 4, "=A3+B3"]] },
   },
   commonFormulas: [
@@ -643,7 +531,7 @@ export async function handler(event) {
     return fail(400, "INVALID_JSON", "Could not parse request body as JSON");
   }
 
-  const { data: rawData, csv, formula, formulas, returnMode, sheetName, headers, groupBy } = body;
+  const { data: rawData, csv, formulas, headers, groupBy } = body;
 
   // Resolve data from 'data' or 'csv'
   if (rawData !== undefined && csv !== undefined) {
@@ -665,10 +553,9 @@ export async function handler(event) {
   const dataErr = validateData(data);
   if (dataErr) return fail(400, "INVALID_DATA", dataErr);
 
-  // Validate mutual exclusivity of formula modes
-  const modeCount = [formula !== undefined, formulas !== undefined, groupBy !== undefined].filter(Boolean).length;
-  if (modeCount > 1) {
-    return fail(400, "INVALID_PARAMS", "Provide only one of 'formula', 'formulas', or 'groupBy'");
+  // Validate mutual exclusivity
+  if (formulas !== undefined && groupBy !== undefined) {
+    return fail(400, "INVALID_PARAMS", "Provide either 'formulas' or 'groupBy', not both");
   }
 
   // Validate groupBy
@@ -678,11 +565,6 @@ export async function handler(event) {
     if (!groupBy.aggregates || typeof groupBy.aggregates !== "object" || Object.keys(groupBy.aggregates).length === 0) {
       return fail(400, "INVALID_GROUPBY", "groupBy.aggregates must be a non-empty object mapping column names to aggregate functions");
     }
-  }
-
-  // Validate formula if provided
-  if (formula !== undefined && (typeof formula !== "string" || !formula.startsWith("="))) {
-    return fail(400, "INVALID_FORMULA", "formula must be a string starting with '='");
   }
 
   // Validate formulas array if provided
@@ -697,14 +579,8 @@ export async function handler(event) {
     }
   }
 
-  // Validate returnMode
-  const validModes = ["grid", "value", "results"];
-  if (returnMode !== undefined && !validModes.includes(returnMode)) {
-    return fail(400, "INVALID_RETURN_MODE", `returnMode must be one of: ${validModes.join(", ")}`);
-  }
-
   try {
-    const result = evaluate({ data, formula, formulas, returnMode, sheetName, headers, groupBy });
+    const result = evaluate({ data, formulas, headers, groupBy });
     trackEval(clientIp, body, result);
     return { statusCode: 200, headers: h, body: JSON.stringify(result) };
   } catch (err) {
