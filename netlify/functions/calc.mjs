@@ -52,6 +52,10 @@ function trackError(clientIp, errorType) {
 const MAX_ROWS = 50_000;
 const MAX_COLS = 50;
 const MAX_BODY_BYTES = 50_000_000; // 50 MB
+const MAX_FORMULA_LENGTH = 2_000;
+const MAX_FORMULAS = 100;
+const MAX_CELL_CHARS = 10_000;
+const EVAL_TIMEOUT_MS = 5_000;
 const RATE_LIMIT = 60; // requests per window
 const RATE_WINDOW_MS = 60_000; // 1 minute
 
@@ -146,6 +150,7 @@ function parseCSV(text) {
       } else {
         cell += ch;
       }
+      if (cell.length > MAX_CELL_CHARS) throw { type: "INVALID_CSV", message: `Cell exceeds maximum of ${MAX_CELL_CHARS} characters` };
     } else {
       if (ch === '"') {
         inQuotes = true;
@@ -398,7 +403,7 @@ const API_SCHEMA = {
   method: "POST",
   contentType: "application/json",
   rateLimit: { requests: RATE_LIMIT, windowSeconds: RATE_WINDOW_MS / 1000 },
-  limits: { maxRows: MAX_ROWS, maxCols: MAX_COLS, maxBodyBytes: MAX_BODY_BYTES },
+  limits: { maxRows: MAX_ROWS, maxCols: MAX_COLS, maxBodyBytes: MAX_BODY_BYTES, maxFormulaLength: MAX_FORMULA_LENGTH, maxFormulas: MAX_FORMULAS, maxCellChars: MAX_CELL_CHARS, evalTimeoutSeconds: EVAL_TIMEOUT_MS / 1000 },
   parameters: {
     data: {
       type: "array of arrays",
@@ -461,6 +466,17 @@ const API_SCHEMA = {
     formulaDocs: "https://hyperformula.handsontable.com/guide/built-in-functions.html",
   },
 };
+
+// --- Timeout wrapper ---
+
+function evalWithTimeout(args) {
+  const start = Date.now();
+  const result = evaluate(args);
+  if (Date.now() - start > EVAL_TIMEOUT_MS) {
+    throw { type: "EVALUATION_TIMEOUT" };
+  }
+  return result;
+}
 
 // --- Handler ---
 
@@ -572,23 +588,31 @@ export async function handler(event) {
     if (!Array.isArray(formulas) || formulas.length === 0) {
       return fail(400, "INVALID_FORMULAS", "formulas must be a non-empty array");
     }
+    if (formulas.length > MAX_FORMULAS) {
+      return fail(400, "INVALID_FORMULAS", `formulas exceeds maximum of ${MAX_FORMULAS}`);
+    }
     for (let i = 0; i < formulas.length; i++) {
       if (typeof formulas[i] !== "string" || !formulas[i].startsWith("=")) {
         return fail(400, "INVALID_FORMULAS", `formulas[${i}] must be a string starting with '='`);
+      }
+      if (formulas[i].length > MAX_FORMULA_LENGTH) {
+        return fail(400, "INVALID_FORMULAS", `formulas[${i}] exceeds maximum of ${MAX_FORMULA_LENGTH} characters`);
       }
     }
   }
 
   try {
-    const result = evaluate({ data, formulas, headers, groupBy });
+    const result = evalWithTimeout({ data, formulas, headers, groupBy });
     trackEval(clientIp, body, result);
     return { statusCode: 200, headers: h, body: JSON.stringify(result) };
   } catch (err) {
-    trackError(clientIp, err.type || "EVALUATION_ERROR");
-    return {
-      statusCode: 422,
-      headers: h,
-      body: JSON.stringify({ success: false, error: { type: err.type || "EVALUATION_ERROR", message: err.message || "Evaluation failed", details: err.details } }),
-    };
+    if (err.type === "EVALUATION_TIMEOUT") {
+      trackError(clientIp, "EVALUATION_TIMEOUT");
+      return { statusCode: 408, headers: h, body: JSON.stringify({ success: false, error: { type: "EVALUATION_TIMEOUT", message: `Evaluation exceeded ${EVAL_TIMEOUT_MS / 1000}s limit` } }) };
+    }
+    const safeType = err.type || "EVALUATION_ERROR";
+    const safeMessage = err.type ? (err.message || "Evaluation failed") : "Evaluation failed";
+    trackError(clientIp, safeType);
+    return { statusCode: 422, headers: h, body: JSON.stringify({ success: false, error: { type: safeType, message: safeMessage } }) };
   }
 }
