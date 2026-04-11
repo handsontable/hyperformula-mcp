@@ -252,6 +252,52 @@
       font-size: .78rem;
     }
 
+    /* Section headings */
+    .section { margin-top: 2.5rem; }
+    .section h2 {
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: #222;
+      margin-bottom: .25rem;
+    }
+    .section > p {
+      font-size: .85rem;
+      color: #6f6f6f;
+      margin-bottom: 1rem;
+    }
+    .section pre {
+      background: #1a1a2e;
+      color: #e0e0e0;
+      padding: .75rem;
+      border-radius: 6px;
+      font-size: .78rem;
+      line-height: 1.55;
+      overflow-x: auto;
+      margin-bottom: 1rem;
+    }
+    .section pre .hl-comment { color: #6a9955; }
+
+    /* Arch diagram */
+    .arch-diagram {
+      background: #f5f6fa;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 1rem;
+      font-family: 'SF Mono', 'Fira Code', 'Fira Mono', Menlo, monospace;
+      font-size: .72rem;
+      line-height: 1.6;
+      overflow-x: auto;
+      white-space: pre;
+      color: #444;
+      margin-bottom: 1rem;
+    }
+
+    /* Perf table */
+    .perf-table { width: 100%; border-collapse: collapse; font-size: .82rem; margin-bottom: .5rem; }
+    .perf-table th { text-align: left; padding: .5rem .75rem; background: #f5f6fa; border: 1px solid #e5e7eb; font-weight: 600; color: #363636; }
+    .perf-table td { padding: .5rem .75rem; border: 1px solid #e5e7eb; color: #555; }
+    .perf-table td:last-child { font-family: 'SF Mono', monospace; font-size: .8rem; }
+
     /* Footer */
     .footer {
       text-align: center;
@@ -370,6 +416,89 @@
           </tbody>
         </table>
       </div>
+    </div>
+
+    <hr class="divider">
+
+    <!-- Limits -->
+    <div class="section">
+      <h2>Limits</h2>
+      <table class="perf-table">
+        <thead><tr><th>Constraint</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td>Max rows</td><td>50,000 (+ header)</td></tr>
+          <tr><td>Max columns</td><td>50</td></tr>
+          <tr><td>Max body size</td><td>50 MB</td></tr>
+          <tr><td>Max formula length</td><td>2,000 chars</td></tr>
+          <tr><td>Max formulas per request</td><td>100</td></tr>
+          <tr><td>Max CSV cell size</td><td>10,000 chars</td></tr>
+          <tr><td>Evaluation timeout</td><td>5 seconds</td></tr>
+          <tr><td>Rate limit</td><td>60 req/min per IP</td></tr>
+        </tbody>
+      </table>
+      <p>Rate limit headers (<code>X-RateLimit-Limit</code>, <code>X-RateLimit-Remaining</code>, <code>X-RateLimit-Reset</code>) are included on every response.</p>
+    </div>
+
+    <hr class="divider">
+
+    <!-- Architecture -->
+    <div class="section">
+      <h2>Architecture</h2>
+      <p>Stateless serverless function. No database, no sessions. Each request is independent. Deployable on Netlify, Vercel, Cloudflare Workers, or any Node.js serverless platform.</p>
+      <div class="arch-diagram">MCP Client (Claude, etc.)     Any HTTP Client (curl, fetch, Python)
+        │ stdio                        │ HTTPS
+        ▼                              ▼
+┌─────────────────┐      ┌────────────────────────────┐
+│  mcp-server.mjs │─────▶│  POST /api/calc            │
+│  (thin wrapper) │      │  Serverless Function        │
+└─────────────────┘      └─────────────┬──────────────┘
+                                       │
+                         ┌─────────────▼──────────────┐
+                         │  HyperFormula Engine        │
+                         │  (stateless, per-request)   │
+                         └─────────────┬──────────────┘
+                                       │
+                         ┌─────────────▼──────────────┐
+                         │  PostHog Analytics          │
+                         │  (anonymous, formulas only) │
+                         └────────────────────────────┘</div>
+      <p>The MCP server is a thin client-side wrapper. All requests flow through the hosted API, so rate limiting, hardening, and analytics apply regardless of how the service is accessed.</p>
+    </div>
+
+    <hr class="divider">
+
+    <!-- Performance -->
+    <div class="section">
+      <h2>Performance</h2>
+      <p>Benchmarked with a 50,000-row sales dataset (14 columns, 6 MB CSV) on Apple M4 Max / Node 22.</p>
+      <table class="perf-table">
+        <thead><tr><th>Mode</th><th>Details</th><th>Avg Time</th></tr></thead>
+        <tbody>
+          <tr><td>Formulas + named columns</td><td>7 formulas (SUM, AVERAGE, MAX, COUNTA)</td><td>~1,016 ms</td></tr>
+          <tr><td>Formulas + cell references</td><td>3 formulas, no headers</td><td>~560 ms</td></tr>
+          <tr><td>GroupBy (7 groups)</td><td>by Region, 3 aggregates</td><td>~1,707 ms</td></tr>
+          <tr><td>GroupBy (12 groups)</td><td>by Item Type, 4 aggregates</td><td>~2,838 ms</td></tr>
+          <tr><td>GroupBy (2 groups)</td><td>by Sales Channel, 3 aggregates</td><td>~1,127 ms</td></tr>
+          <tr><td>Small dataset</td><td>3 rows, 3 formulas</td><td>~7 ms</td></tr>
+        </tbody>
+      </table>
+      <p>Times are server-side <code>durationMs</code> (excludes network and CSV parsing overhead).</p>
+    </div>
+
+    <hr class="divider">
+
+    <!-- AI Agent Discovery -->
+    <div class="section">
+      <h2>AI Agent Discovery</h2>
+      <p>Machine-readable endpoints for automatic tool discovery:</p>
+      <table class="perf-table">
+        <thead><tr><th>Endpoint</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><a href="/api/calc" target="_blank" style="color:#104acc">GET /api/calc</a></td><td>Full API schema — parameters, examples, supported formulas, limits</td></tr>
+          <tr><td><a href="/openapi.json" target="_blank" style="color:#104acc">/openapi.json</a></td><td>OpenAPI 3.1 specification</td></tr>
+          <tr><td><a href="/.well-known/ai-plugin.json" target="_blank" style="color:#104acc">/.well-known/ai-plugin.json</a></td><td>AI plugin manifest</td></tr>
+        </tbody>
+      </table>
     </div>
 
   </div>
