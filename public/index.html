@@ -331,7 +331,7 @@
     <p style="font-size:.9rem;color:#444;margin-bottom:.5rem;line-height:1.7">
       Send data and spreadsheet formulas to <code style="background:#eef2ff;color:#104acc;padding:.1rem .35rem;border-radius:3px;font-size:.82rem">POST /api/calc</code> and get computed results back as JSON.
       Accepts raw CSV or JSON arrays. Supports 400+ Excel-compatible functions, named columns, and declarative groupBy aggregation.
-      Up to 50,000 rows per request.
+      Read and write <strong>.xlsx files</strong> directly via the MCP server. Up to 50,000 rows per request.
     </p>
 
     <label style="margin-top:1rem">Try it</label>
@@ -420,6 +420,20 @@
         <pre>{
   <span class="key">"data"</span><span class="punct">:</span> [[<span class="str">"a"</span>, <span class="str">"b"</span>, <span class="str">"sum"</span>], [<span class="num">1</span>, <span class="num">2</span>, <span class="str">"=A2+B2"</span>], [<span class="num">3</span>, <span class="num">4</span>, <span class="str">"=A3+B3"</span>]]
 }</pre>
+      </div>
+
+      <div class="mode-card" style="border-color:#104acc;background:#eef2ff">
+        <h3>Excel File Support <span style="font-size:.7rem;font-weight:600;background:#104acc;color:#fff;padding:.1rem .4rem;border-radius:3px;vertical-align:middle;letter-spacing:.03em;margin-left:.35rem">MCP</span></h3>
+        <p class="desc">When using the MCP server, pass a local <code>.xlsx</code>, <code>.xls</code>, or <code>.csv</code> file path with the <code>file</code> parameter. Optionally write results back as an <code>.xlsx</code> with <code>output_file</code>. Multi-sheet workbooks supported via <code>sheet</code>.</p>
+        <pre><span class="punct">// MCP tool call: calc_formulas</span>
+{
+  <span class="key">"file"</span><span class="punct">:</span> <span class="str">"/path/to/sales.xlsx"</span>,           <span class="punct">// .xlsx, .xls, or .csv</span>
+  <span class="key">"sheet"</span><span class="punct">:</span> <span class="str">"Q4"</span>,                          <span class="punct">// optional, defaults to first</span>
+  <span class="key">"headers"</span><span class="punct">:</span> <span class="num">true</span>,
+  <span class="key">"formulas"</span><span class="punct">:</span> [<span class="str">"=SUM(Revenue)"</span>, <span class="str">"=AVERAGE(Units)"</span>],
+  <span class="key">"output_file"</span><span class="punct">:</span> <span class="str">"/path/to/results.xlsx"</span>  <span class="punct">// optional write-back</span>
+}</pre>
+        <p class="desc" style="margin-top:.75rem;margin-bottom:0">The MCP server reads the workbook locally with SheetJS, sends the parsed grid to the calc API, and (when <code>output_file</code> is set) writes the result back as a fresh <code>.xlsx</code> &mdash; ideal for filling in computed columns, totals, or grouped rollups in an existing spreadsheet.</p>
       </div>
 
       <div class="return-modes">
