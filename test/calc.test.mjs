@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { evaluate, parseCSV } from "../src/index.js";
+import worker, { evaluate, parseCSV } from "../src/index.js";
 
 // The deployed logic is the pure `evaluate()` core (shared by the Cloudflare
 // Worker in src/index.js). These tests exercise it directly against the current
@@ -101,5 +101,57 @@ describe("parseCSV", () => {
 
   it("handles quoted fields containing commas", () => {
     assert.deepEqual(parseCSV('name,note\n"Doe, John",hi'), [["name", "note"], ["Doe, John", "hi"]]);
+  });
+});
+
+// ─── Worker fetch handler (HTTP shell) ───────────────────────────
+
+const CTX = { waitUntil() {} };
+
+function req(path, { method = "POST", headers = {}, body = "" } = {}) {
+  return {
+    url: `https://hyperformula-mcp.example${path}`,
+    method,
+    headers: new Headers(headers),
+    text: async () => body,
+  };
+}
+
+describe("worker fetch handler", () => {
+  it("rejects an oversized body up front via Content-Length (413)", async () => {
+    // 60 MB declared — must be refused before the body is read into memory.
+    const res = await worker.fetch(
+      req("/api/calc", { headers: { "content-length": String(60_000_000), "content-type": "application/json" } }),
+      {},
+      CTX
+    );
+    assert.equal(res.status, 413);
+    const json = await res.json();
+    assert.equal(json.error.type, "PAYLOAD_TOO_LARGE");
+  });
+
+  it("evaluates a POST with results and noindex header", async () => {
+    const res = await worker.fetch(
+      req("/api/calc", { body: JSON.stringify({ data: [[1, 2], [3, 4]], formulas: ["=SUM(A1:B2)"] }) }),
+      {},
+      CTX
+    );
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("x-robots-tag"), "noindex");
+    const json = await res.json();
+    assert.deepEqual(json.result, [10]);
+  });
+
+  it("returns the schema on GET", async () => {
+    const res = await worker.fetch(req("/api/calc", { method: "GET" }), {}, CTX);
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.equal(json.endpoint, "/api/calc");
+  });
+
+  it("204s a CORS preflight", async () => {
+    const res = await worker.fetch(req("/api/calc", { method: "OPTIONS" }), {}, CTX);
+    assert.equal(res.status, 204);
+    assert.equal(res.headers.get("access-control-allow-origin"), "*");
   });
 });
