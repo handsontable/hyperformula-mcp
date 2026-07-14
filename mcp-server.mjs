@@ -4,7 +4,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { readFileSync } from "fs";
 import XLSX from "xlsx";
 
-const API_URL = process.env.HYPERFORMULA_API_URL || "https://hyperformula-mcp.netlify.app/api/calc";
+const API_URL = process.env.HYPERFORMULA_API_URL || "https://hyperformula-mcp.handsontable-sandbox.workers.dev/api/calc";
 
 // --- xlsx helpers ---
 

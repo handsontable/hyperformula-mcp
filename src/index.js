@@ -1,24 +1,28 @@
 import { HyperFormula } from "hyperformula";
-import { PostHog } from "posthog-node";
-import { createHash } from "crypto";
+import { createHash } from "node:crypto";
 
-// --- Analytics (lazy init) ---
-let posthog = null;
-function getPostHog() {
-  if (!posthog && process.env.POSTHOG_API_KEY) {
-    posthog = new PostHog(process.env.POSTHOG_API_KEY, { flushAt: 1, flushInterval: 0 });
-  }
-  return posthog;
-}
+// --- Analytics (fetch-based PostHog capture, non-blocking) ---
+// Ported from posthog-node: on Workers we POST directly to the capture endpoint
+// via ctx.waitUntil so it never blocks the response. No-op when the key is unset.
+const POSTHOG_HOST = "https://us.i.posthog.com";
 
 function anonymousId(ip) {
   return createHash("sha256").update(ip || "unknown").digest("hex").slice(0, 16);
 }
 
-function trackEval(clientIp, body, result) {
-  const ph = getPostHog();
-  if (!ph) return;
+function capture(env, ctx, distinctId, event, properties) {
+  const key = env.POSTHOG_API_KEY;
+  if (!key) return;
+  ctx.waitUntil(
+    fetch(`${POSTHOG_HOST}/capture/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ api_key: key, event, distinct_id: distinctId, properties }),
+    }).catch(() => {})
+  );
+}
 
+function trackEval(env, ctx, clientIp, body, result) {
   const props = {
     mode: result.mode,
     input_type: body.csv !== undefined ? "csv" : "data",
@@ -39,13 +43,11 @@ function trackEval(clientIp, body, result) {
     props.groupBy_groups = result.meta?.groups;
   }
 
-  ph.capture({ distinctId: anonymousId(clientIp), event: "calc_evaluated", properties: props });
+  capture(env, ctx, anonymousId(clientIp), "calc_evaluated", props);
 }
 
-function trackError(clientIp, errorType) {
-  const ph = getPostHog();
-  if (!ph) return;
-  ph.capture({ distinctId: anonymousId(clientIp), event: "calc_error", properties: { error_type: errorType } });
+function trackError(env, ctx, clientIp, errorType) {
+  capture(env, ctx, anonymousId(clientIp), "calc_error", { error_type: errorType });
 }
 
 // --- Limits ---
@@ -60,6 +62,8 @@ const RATE_LIMIT = 60; // requests per window
 const RATE_WINDOW_MS = 60_000; // 1 minute
 
 // --- Rate limiter (in-memory sliding window) ---
+// Per-isolate and ephemeral, same practical scope as the previous per-instance
+// Netlify function. Good enough for basic abuse protection; not a global limit.
 const ipHits = new Map();
 
 function rateLimit(ip) {
@@ -133,7 +137,7 @@ function normalizeData(data) {
 
 // --- CSV parsing ---
 
-function parseCSV(text) {
+export function parseCSV(text) {
   const rows = [];
   let row = [];
   let cell = "";
@@ -203,7 +207,7 @@ function sanitizeName(name) {
   return s;
 }
 
-function evaluate({ data, formulas, headers, groupBy }) {
+export function evaluate({ data, formulas, headers, groupBy }) {
   const name = "Sheet1";
   const normalized = normalizeData(data);
   const startMs = Date.now();
@@ -478,51 +482,52 @@ function evalWithTimeout(args) {
   return result;
 }
 
-// --- Handler ---
+// --- API handler (POST/GET /api/calc) ---
 
-export async function handler(event) {
+async function handleCalc(request, env, ctx) {
   const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
+    "X-Robots-Tag": "noindex",
   };
 
   // CORS preflight
-  if (event.httpMethod === "OPTIONS") {
-    return { statusCode: 204, headers: corsHeaders };
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: corsHeaders });
   }
 
   // GET — return API schema for discoverability
-  if (event.httpMethod === "GET") {
-    return {
-      statusCode: 200,
+  if (request.method === "GET") {
+    return new Response(JSON.stringify(API_SCHEMA, null, 2), {
+      status: 200,
       headers: { "Content-Type": "application/json", ...corsHeaders },
-      body: JSON.stringify(API_SCHEMA, null, 2),
-    };
+    });
   }
 
-  if (event.httpMethod !== "POST") {
-    return {
-      statusCode: 405,
-      headers: { "Content-Type": "application/json", ...corsHeaders },
-      body: JSON.stringify({ success: false, error: { type: "METHOD_NOT_ALLOWED", message: "Use GET for API docs or POST to evaluate" } }),
-    };
+  if (request.method !== "POST") {
+    return new Response(
+      JSON.stringify({ success: false, error: { type: "METHOD_NOT_ALLOWED", message: "Use GET for API docs or POST to evaluate" } }),
+      { status: 405, headers: { "Content-Type": "application/json", ...corsHeaders } }
+    );
   }
 
   // Rate limiting
-  const clientIp = (event.headers["x-forwarded-for"] || event.headers["client-ip"] || "unknown").split(",")[0].trim();
+  const clientIp = (request.headers.get("cf-connecting-ip") || request.headers.get("x-forwarded-for") || "unknown").split(",")[0].trim();
   const rl = rateLimit(clientIp);
   if (!rl.allowed) {
-    return {
-      statusCode: 429,
-      headers: {
-        "Content-Type": "application/json",
-        "Retry-After": String(Math.ceil(RATE_WINDOW_MS / 1000)),
-        ...rateLimitHeaders(rl),
-        ...corsHeaders,
-      },
-      body: JSON.stringify({ success: false, error: { type: "RATE_LIMITED", message: `Rate limit exceeded. Max ${RATE_LIMIT} requests per minute.` } }),
-    };
+    return new Response(
+      JSON.stringify({ success: false, error: { type: "RATE_LIMITED", message: `Rate limit exceeded. Max ${RATE_LIMIT} requests per minute.` } }),
+      {
+        status: 429,
+        headers: {
+          "Content-Type": "application/json",
+          "Retry-After": String(Math.ceil(RATE_WINDOW_MS / 1000)),
+          ...rateLimitHeaders(rl),
+          ...corsHeaders,
+        },
+      }
+    );
   }
 
   const h = {
@@ -531,18 +536,20 @@ export async function handler(event) {
     ...corsHeaders,
   };
 
-  function fail(statusCode, type, message) {
-    return { statusCode, headers: h, body: JSON.stringify({ success: false, error: { type, message } }) };
+  function fail(status, type, message) {
+    return new Response(JSON.stringify({ success: false, error: { type, message } }), { status, headers: h });
   }
 
+  const rawBody = await request.text();
+
   // Body size check
-  if (event.body && event.body.length > MAX_BODY_BYTES) {
+  if (rawBody && rawBody.length > MAX_BODY_BYTES) {
     return fail(413, "PAYLOAD_TOO_LARGE", `Body exceeds ${MAX_BODY_BYTES} bytes`);
   }
 
   let body;
   try {
-    body = JSON.parse(event.body);
+    body = JSON.parse(rawBody);
   } catch {
     return fail(400, "INVALID_JSON", "Could not parse request body as JSON");
   }
@@ -559,7 +566,11 @@ export async function handler(event) {
     if (typeof csv !== "string" || csv.trim() === "") {
       return fail(400, "INVALID_CSV", "csv must be a non-empty string");
     }
-    data = parseCSV(csv);
+    try {
+      data = parseCSV(csv);
+    } catch (e) {
+      return fail(400, e.type || "INVALID_CSV", e.message || "Could not parse csv");
+    }
     if (data.length === 0) return fail(400, "INVALID_CSV", "csv produced no rows");
   } else {
     data = rawData;
@@ -603,16 +614,31 @@ export async function handler(event) {
 
   try {
     const result = evalWithTimeout({ data, formulas, headers, groupBy });
-    trackEval(clientIp, body, result);
-    return { statusCode: 200, headers: h, body: JSON.stringify(result) };
+    trackEval(env, ctx, clientIp, body, result);
+    return new Response(JSON.stringify(result), { status: 200, headers: h });
   } catch (err) {
     if (err.type === "EVALUATION_TIMEOUT") {
-      trackError(clientIp, "EVALUATION_TIMEOUT");
-      return { statusCode: 408, headers: h, body: JSON.stringify({ success: false, error: { type: "EVALUATION_TIMEOUT", message: `Evaluation exceeded ${EVAL_TIMEOUT_MS / 1000}s limit` } }) };
+      trackError(env, ctx, clientIp, "EVALUATION_TIMEOUT");
+      return new Response(JSON.stringify({ success: false, error: { type: "EVALUATION_TIMEOUT", message: `Evaluation exceeded ${EVAL_TIMEOUT_MS / 1000}s limit` } }), { status: 408, headers: h });
     }
     const safeType = err.type || "EVALUATION_ERROR";
     const safeMessage = err.type ? (err.message || "Evaluation failed") : "Evaluation failed";
-    trackError(clientIp, safeType);
-    return { statusCode: 422, headers: h, body: JSON.stringify({ success: false, error: { type: safeType, message: safeMessage } }) };
+    trackError(env, ctx, clientIp, safeType);
+    return new Response(JSON.stringify({ success: false, error: { type: safeType, message: safeMessage } }), { status: 422, headers: h });
   }
 }
+
+// --- Worker entry ---
+
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+
+    if (url.pathname === "/api/calc") {
+      return handleCalc(request, env, ctx);
+    }
+
+    // Everything else is a static asset from ./public (noindex via public/_headers).
+    return env.ASSETS.fetch(request);
+  },
+};

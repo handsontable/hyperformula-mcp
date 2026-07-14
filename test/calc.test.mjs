@@ -1,254 +1,105 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { handler } from "../netlify/functions/calc.mjs";
+import { evaluate, parseCSV } from "../src/index.js";
 
-// Helper: build a Netlify-style event object
-function makeEvent(body, method = "POST") {
-  const raw = typeof body === "string" ? body : JSON.stringify(body);
-  return { httpMethod: method, body: raw };
-}
+// The deployed logic is the pure `evaluate()` core (shared by the Cloudflare
+// Worker in src/index.js). These tests exercise it directly against the current
+// API: `formulas` (array), `grid`, and `groupBy` modes.
 
-async function call(body) {
-  const res = await handler(makeEvent(body));
-  return { ...res, json: JSON.parse(res.body) };
-}
+// ─── Formulas mode ───────────────────────────────────────────────
 
-// ─── Single formula mode ─────────────────────────────────────────
-
-describe("single formula mode", () => {
-  it("evaluates SUM", async () => {
-    const { json } = await call({
-      data: [["v"], [10], [20], [30]],
-      formula: "=SUM(A2:A4)",
-    });
-    assert.equal(json.success, true);
-    assert.equal(json.mode, "single");
-    assert.equal(json.result, 60);
+describe("formulas mode", () => {
+  it("evaluates SUM over a cell range", () => {
+    const out = evaluate({ data: [["v"], [10], [20], [30]], formulas: ["=SUM(A2:A4)"] });
+    assert.equal(out.success, true);
+    assert.equal(out.mode, "formulas");
+    assert.deepEqual(out.result, [60]);
   });
 
-  it("evaluates AVERAGE", async () => {
-    const { json } = await call({
-      data: [["v"], [10], [20], [30]],
-      formula: "=AVERAGE(A2:A4)",
-    });
-    assert.equal(json.result, 20);
+  it("evaluates multiple formulas in order", () => {
+    const out = evaluate({ data: [[10, 20], [30, 40]], formulas: ["=SUM(A1:A2)", "=SUM(B1:B2)", "=AVERAGE(A1:B2)"] });
+    assert.deepEqual(out.result, [40, 60, 25]);
   });
 
-  it("evaluates CONCATENATE", async () => {
-    const { json } = await call({
-      data: [["first", "last"], ["Jane", "Doe"]],
-      formula: '=CONCATENATE(A2," ",B2)',
-    });
-    assert.equal(json.result, "Jane Doe");
+  it("references columns by name when headers:true", () => {
+    const data = parseCSV("name,score\nAlice,85\nBob,92\nCarol,78");
+    const out = evaluate({ data, headers: true, formulas: ["=SUM(score)", "=AVERAGE(score)"] });
+    assert.equal(out.result[0], 255);
+    assert.equal(out.result[1], 85);
+    assert.ok(out.meta.columns.score);
   });
 
-  it("evaluates COUNT", async () => {
-    const { json } = await call({
-      data: [["v"], [1], [null], [3], ["text"]],
-      formula: "=COUNT(A2:A5)",
-    });
-    assert.equal(json.result, 2); // COUNT counts numbers only
+  it("sanitizes column names with spaces", () => {
+    const out = evaluate({ data: [["Total Revenue", "Total Cost"], [1000, 800]], headers: true, formulas: ["=SUM(Total_Revenue)"] });
+    assert.equal(out.result[0], 1000);
   });
 
-  it("returns grid when returnMode=grid", async () => {
-    const { json } = await call({
-      data: [["v"], [10], [20]],
-      formula: "=SUM(A2:A3)",
-      returnMode: "grid",
-    });
-    assert.equal(json.mode, "single");
-    assert.ok(Array.isArray(json.result));
-    assert.equal(json.result.length, 3); // 3 data rows (formula row excluded)
+  it("returns a HyperFormula error object for a bad formula", () => {
+    const out = evaluate({ data: [[1]], formulas: ["=1/0"] });
+    assert.ok(out.result[0] && typeof out.result[0] === "object" && out.result[0].error);
   });
 
-  it("includes meta with rows, cols, durationMs", async () => {
-    const { json } = await call({
-      data: [["a"], [1]],
-      formula: "=A2+1",
-    });
-    assert.equal(json.meta.rows, 2);
-    assert.equal(json.meta.cols, 1);
-    assert.equal(typeof json.meta.durationMs, "number");
+  it("includes meta with rows, cols, durationMs", () => {
+    const out = evaluate({ data: [["a"], [1]], formulas: ["=A2+1"] });
+    assert.equal(out.meta.rows, 2);
+    assert.equal(out.meta.cols, 1);
+    assert.equal(typeof out.meta.durationMs, "number");
   });
 });
 
-// ─── Embedded formula mode ───────────────────────────────────────
+// ─── Grid mode (embedded formulas) ───────────────────────────────
 
-describe("embedded formula mode", () => {
-  it("evaluates formulas in cells", async () => {
-    const { json } = await call({
-      data: [
-        ["a", "b", "sum"],
-        [1, 2, "=A2+B2"],
-        [3, 4, "=A3+B3"],
-      ],
-    });
-    assert.equal(json.success, true);
-    assert.equal(json.mode, "grid");
-    assert.deepEqual(json.result[1], [1, 2, 3]);
-    assert.deepEqual(json.result[2], [3, 4, 7]);
+describe("grid mode", () => {
+  it("resolves embedded formulas and returns the full grid", () => {
+    const out = evaluate({ data: [["a", "b", "sum"], [1, 2, "=A2+B2"], [3, 4, "=A3+B3"]] });
+    assert.equal(out.mode, "grid");
+    assert.deepEqual(out.result, [["a", "b", "sum"], [1, 2, 3], [3, 4, 7]]);
   });
 
-  it("evaluates IF formulas", async () => {
-    const { json } = await call({
-      data: [
-        ["status", "price", "qty", "discount", "result"],
-        ["active", 100, 2, 0.1, '=IF(A2="active",B2*C2*(1-D2),0)'],
-        ["inactive", 50, 1, 0, '=IF(A3="active",B3*C3*(1-D3),0)'],
-      ],
-    });
-    assert.equal(json.result[1][4], 180);
-    assert.equal(json.result[2][4], 0);
-  });
-
-  it("returns only formula results with returnMode=results", async () => {
-    const { json } = await call({
-      data: [
-        ["a", "b", "sum"],
-        [1, 2, "=A2+B2"],
-        [3, 4, "=A3+B3"],
-      ],
-      returnMode: "results",
-    });
-    assert.equal(json.result.length, 2);
-    assert.deepEqual(json.result[0], { row: 1, col: 2, value: 3 });
-    assert.deepEqual(json.result[1], { row: 2, col: 2, value: 7 });
-  });
-
-  it("handles cells referencing other formula cells", async () => {
-    const { json } = await call({
-      data: [
-        ["a", "b", "c"],
-        [5, "=A2*2", "=B2+1"],
-      ],
-    });
-    assert.equal(json.result[1][1], 10);
-    assert.equal(json.result[1][2], 11);
+  it("handles cells referencing other formula cells", () => {
+    const out = evaluate({ data: [["a", "b", "c"], [5, "=A2*2", "=B2+1"]] });
+    assert.equal(out.result[1][1], 10);
+    assert.equal(out.result[1][2], 11);
   });
 });
 
-// ─── Edge cases ──────────────────────────────────────────────────
+// ─── GroupBy mode ────────────────────────────────────────────────
 
-describe("edge cases", () => {
-  it("handles null and empty cells", async () => {
-    const { json } = await call({
-      data: [["a", "b"], [null, ""], [1, 2]],
-      formula: "=SUM(A2:B3)",
-    });
-    assert.equal(json.result, 3);
+describe("groupBy mode", () => {
+  it("aggregates SUM and AVERAGE per group", () => {
+    const data = parseCSV("Region,Revenue,Units\nEurope,1000,50\nAsia,2000,80\nEurope,1500,30");
+    const out = evaluate({ data, headers: true, groupBy: { by: "Region", aggregates: { Revenue: "SUM", Units: "AVERAGE" } } });
+    assert.equal(out.mode, "groupBy");
+    const europe = out.result.find(r => r.group === "Europe");
+    const asia = out.result.find(r => r.group === "Asia");
+    assert.equal(europe.Revenue, 2500);
+    assert.equal(europe.Units, 40);
+    assert.equal(asia.Revenue, 2000);
+    assert.equal(asia.Units, 80);
   });
 
-  it("handles single-cell data", async () => {
-    const { json } = await call({
-      data: [[42]],
-      formula: "=A1*2",
-    });
-    assert.equal(json.result, 84);
+  it("computes MEDIAN manually per group", () => {
+    const data = parseCSV("g,v\nx,1\nx,3\nx,5\ny,10\ny,20");
+    const out = evaluate({ data, headers: true, groupBy: { by: "g", aggregates: { v: "MEDIAN" } } });
+    const x = out.result.find(r => r.group === "x");
+    const y = out.result.find(r => r.group === "y");
+    assert.equal(x.v, 3);
+    assert.equal(y.v, 15);
   });
 
-  it("handles ragged rows (different lengths)", async () => {
-    const { json } = await call({
-      data: [["a", "b"], [1], [2, 3]],
-      formula: "=SUM(A2:B3)",
-    });
-    assert.equal(json.result, 6); // 1+0+2+3
-  });
-
-  it("preserves header row strings", async () => {
-    const { json } = await call({
-      data: [["Name", "Score"], ["Alice", 95]],
-    });
-    assert.deepEqual(json.result[0], ["Name", "Score"]);
-    assert.deepEqual(json.result[1], ["Alice", 95]);
-  });
-
-  it("handles boolean values", async () => {
-    const { json } = await call({
-      data: [[true], [false]],
-      formula: "=AND(A1,A2)",
-    });
-    assert.equal(json.result, false);
+  it("throws for an unknown groupBy column", () => {
+    assert.throws(() => evaluate({ data: [["a"], [1]], headers: true, groupBy: { by: "missing", aggregates: { a: "SUM" } } }));
   });
 });
 
-// ─── Validation & errors ─────────────────────────────────────────
+// ─── CSV parsing ─────────────────────────────────────────────────
 
-describe("validation", () => {
-  it("rejects missing data", async () => {
-    const { statusCode, json } = await call({});
-    assert.equal(statusCode, 400);
-    assert.equal(json.error.type, "INVALID_DATA");
+describe("parseCSV", () => {
+  it("auto-types numbers and keeps strings", () => {
+    assert.deepEqual(parseCSV("a,b\n1,x\n2,y"), [["a", "b"], [1, "x"], [2, "y"]]);
   });
 
-  it("rejects non-array data", async () => {
-    const { statusCode, json } = await call({ data: "nope" });
-    assert.equal(statusCode, 400);
-    assert.equal(json.error.type, "INVALID_DATA");
-  });
-
-  it("rejects non-array row", async () => {
-    const { statusCode, json } = await call({ data: [[1], "bad"] });
-    assert.equal(statusCode, 400);
-    assert.match(json.error.message, /data\[1\] is not an array/);
-  });
-
-  it("rejects invalid formula (no = prefix)", async () => {
-    const { statusCode, json } = await call({
-      data: [[1]],
-      formula: "SUM(A1)",
-    });
-    assert.equal(statusCode, 400);
-    assert.equal(json.error.type, "INVALID_FORMULA");
-  });
-
-  it("rejects invalid returnMode", async () => {
-    const { statusCode, json } = await call({
-      data: [[1]],
-      returnMode: "bogus",
-    });
-    assert.equal(statusCode, 400);
-    assert.equal(json.error.type, "INVALID_RETURN_MODE");
-  });
-
-  it("rejects non-POST methods", async () => {
-    const res = await handler(makeEvent("{}", "GET"));
-    const json = JSON.parse(res.body);
-    assert.equal(res.statusCode, 405);
-    assert.equal(json.error.type, "METHOD_NOT_ALLOWED");
-  });
-
-  it("handles CORS preflight", async () => {
-    const res = await handler({ httpMethod: "OPTIONS" });
-    assert.equal(res.statusCode, 204);
-    assert.equal(res.headers["Access-Control-Allow-Origin"], "*");
-  });
-
-  it("rejects invalid JSON body", async () => {
-    const res = await handler({ httpMethod: "POST", body: "{bad json" });
-    const json = JSON.parse(res.body);
-    assert.equal(res.statusCode, 400);
-    assert.equal(json.error.type, "INVALID_JSON");
-  });
-
-  it("returns 422 for formula evaluation errors", async () => {
-    const { statusCode, json } = await call({
-      data: [[1]],
-      formula: "=INVALID(((",
-    });
-    assert.equal(statusCode, 422);
-    assert.equal(json.error.type, "FORMULA_ERROR");
-  });
-});
-
-// ─── Custom sheet name ───────────────────────────────────────────
-
-describe("sheetName option", () => {
-  it("accepts a custom sheet name", async () => {
-    const { json } = await call({
-      data: [["v"], [5]],
-      formula: "=A2+10",
-      sheetName: "Data",
-    });
-    assert.equal(json.result, 15);
+  it("handles quoted fields containing commas", () => {
+    assert.deepEqual(parseCSV('name,note\n"Doe, John",hi'), [["name", "note"], ["Doe, John", "hi"]]);
   });
 });

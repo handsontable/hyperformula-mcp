@@ -4,9 +4,14 @@ Stateless spreadsheet calculations via HTTP. Formulas instead of code.
 
 Send data and Excel-compatible formulas to a single API endpoint and get computed results back as JSON. Accepts raw CSV or JSON arrays. Supports named columns, declarative groupBy aggregation, and 400+ built-in functions. Up to 50,000 rows per request.
 
-**Live API**: https://hyperformula-mcp.netlify.app
-**API Schema**: https://hyperformula-mcp.netlify.app/api/calc (GET)
+**Live API**: https://hyperformula-mcp.handsontable-sandbox.workers.dev
+**API Schema**: https://hyperformula-mcp.handsontable-sandbox.workers.dev/api/calc (GET)
 **Repo**: https://github.com/handsontable/hyperformula-mcp
+
+> Hosted as a Cloudflare Worker on the Handsontable sandbox account. The API is
+> public (no authentication) so AI agents and HTTP clients can call it directly;
+> responses carry an `X-Robots-Tag: noindex` header to keep the endpoint out of
+> search results.
 
 Built on [HyperFormula](https://hyperformula.handsontable.com/), a headless spreadsheet calculation engine by [Handsontable](https://handsontable.com/).
 
@@ -18,7 +23,7 @@ Built on [HyperFormula](https://hyperformula.handsontable.com/), a headless spre
 Evaluate one or more formulas against a dataset. Returns an array of results.
 
 ```bash
-curl -X POST https://hyperformula-mcp.netlify.app/api/calc \
+curl -X POST https://hyperformula-mcp.handsontable-sandbox.workers.dev/api/calc \
   -H "Content-Type: application/json" \
   -d '{
     "csv": "product,price,qty\nWidget,10,5\nGadget,25,3",
@@ -34,7 +39,7 @@ curl -X POST https://hyperformula-mcp.netlify.app/api/calc \
 Declarative aggregation — group rows by a column and compute SUM, AVERAGE, COUNT, MIN, MAX, or MEDIAN per group.
 
 ```bash
-curl -X POST https://hyperformula-mcp.netlify.app/api/calc \
+curl -X POST https://hyperformula-mcp.handsontable-sandbox.workers.dev/api/calc \
   -H "Content-Type: application/json" \
   -d '{
     "csv": "Region,Revenue,Units\nEurope,1000,50\nAsia,2000,80\nEurope,1500,30",
@@ -53,7 +58,7 @@ curl -X POST https://hyperformula-mcp.netlify.app/api/calc \
 Place formulas directly in data cells. Returns the full evaluated grid.
 
 ```bash
-curl -X POST https://hyperformula-mcp.netlify.app/api/calc \
+curl -X POST https://hyperformula-mcp.handsontable-sandbox.workers.dev/api/calc \
   -H "Content-Type: application/json" \
   -d '{
     "data": [["a","b","sum"], [1,2,"=A2+B2"], [3,4,"=A3+B3"]]
@@ -79,7 +84,7 @@ Pass raw CSV via the `csv` field instead of building JSON arrays. Numeric values
 
 ### Option 1: Managed API
 
-The hosted API at `https://hyperformula-mcp.netlify.app/api/calc` is ready to use with no setup.
+The hosted API at `https://hyperformula-mcp.handsontable-sandbox.workers.dev/api/calc` is ready to use with no setup.
 
 - **`GET /api/calc`** — Returns the full API schema with parameters, examples, supported formulas, and limits. Useful for AI agent discovery.
 - **`POST /api/calc`** — Evaluate formulas. Send JSON with `csv` or `data`, plus `formulas` or `groupBy`.
@@ -129,23 +134,30 @@ To point the MCP server at a different API (e.g. self-hosted), set the `HYPERFOR
 
 ### Option 3: Self-Hosted
 
-Deploy your own instance on Netlify, Vercel, Cloudflare Workers, or any platform that supports serverless functions.
+The service is a single Cloudflare Worker (`src/index.js`) that serves the static
+files in `public/` via the ASSETS binding **and** runs the `/api/calc` logic
+server-side. No database, no state, no configuration required. It runs on any
+platform that supports Node-compatible serverless functions, but the repo is set
+up for Cloudflare Workers out of the box.
 
 ```bash
 git clone https://github.com/handsontable/hyperformula-mcp
 cd hyperformula-mcp
 npm install
 
-# Local development
-npm run dev        # starts on http://localhost:8888
+# Local development (Wrangler dev server)
+npm run dev
 
-# Deploy to Netlify
-npx netlify deploy --prod
+# Deploy to Cloudflare Workers
+npm run deploy     # runs `wrangler deploy`
 ```
 
-The entire service is a single serverless function (`netlify/functions/calc.mjs`) plus static files. No database, no state, no configuration required.
+Deploying requires a Cloudflare account (`npx wrangler login` on the CLI). The
+target Worker name and account are set in `wrangler.jsonc`.
 
-For analytics, set the `POSTHOG_API_KEY` environment variable with your PostHog project API key.
+For analytics, set a `POSTHOG_API_KEY` Worker secret with your PostHog project
+API key (`npx wrangler secret put POSTHOG_API_KEY`). When it's unset, analytics
+is a no-op.
 
 ---
 
@@ -223,7 +235,7 @@ The API is designed to be easily discovered and used by AI agents:
          ▼                             ▼
 ┌─────────────────┐     ┌──────────────────────────────┐
 │  mcp-server.mjs │────▶│  POST /api/calc              │
-│  (thin wrapper) │     │  Netlify Serverless Function  │
+│  (thin wrapper) │     │  Cloudflare Worker            │
 └─────────────────┘     └──────────────┬───────────────┘
                                        │
                         ┌──────────────▼───────────────┐
@@ -238,7 +250,7 @@ The API is designed to be easily discovered and used by AI agents:
 ```
 
 - **Stateless**: No database, no sessions. Each request is independent.
-- **Edge-deployable**: Runs as a Netlify serverless function. Deploy anywhere that supports Node.js serverless.
+- **Edge-deployable**: Runs as a Cloudflare Worker (static assets + API in one Worker). Deploy anywhere that supports Node-compatible serverless.
 - **Rate limited**: 60 req/min per IP with sliding window. Headers expose remaining quota.
 - **Hardened**: 5s evaluation timeout, formula length/count limits, CSV cell size caps, sanitized error messages.
 - **Observable**: PostHog analytics track formula types, modes, row counts, and durations. Data is never stored or logged.
