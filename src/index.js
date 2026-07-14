@@ -540,9 +540,17 @@ async function handleCalc(request, env, ctx) {
     return new Response(JSON.stringify({ success: false, error: { type, message } }), { status, headers: h });
   }
 
+  // Body size check — reject up front on Content-Length, before reading the
+  // body into memory (a Worker has no platform body cap like Netlify did, so
+  // an oversized payload would otherwise exhaust the isolate before the 413).
+  const contentLength = Number(request.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
+    return fail(413, "PAYLOAD_TOO_LARGE", `Body exceeds ${MAX_BODY_BYTES} bytes`);
+  }
+
   const rawBody = await request.text();
 
-  // Body size check
+  // Fallback for requests without a Content-Length (e.g. chunked transfer).
   if (rawBody && rawBody.length > MAX_BODY_BYTES) {
     return fail(413, "PAYLOAD_TOO_LARGE", `Body exceeds ${MAX_BODY_BYTES} bytes`);
   }
