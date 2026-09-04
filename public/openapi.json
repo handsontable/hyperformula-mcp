@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "HyperFormula Edge Calc Service",
-    "version": "0.3.0",
+    "version": "0.5.0",
     "description": "Stateless spreadsheet calculation API. Send data (JSON arrays or CSV strings) and formulas via HTTP, get computed results. Supports 400+ Excel-compatible functions, named columns via headers, and declarative groupBy aggregation. Ideal for AI agents."
   },
   "servers": [

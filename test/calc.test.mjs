@@ -102,6 +102,14 @@ describe("parseCSV", () => {
   it("handles quoted fields containing commas", () => {
     assert.deepEqual(parseCSV('name,note\n"Doe, John",hi'), [["name", "note"], ["Doe, John", "hi"]]);
   });
+
+  it("skips blank lines instead of emitting null rows", () => {
+    assert.deepEqual(parseCSV("a\n1\n\n2\n"), [["a"], [1], [2]]);
+  });
+
+  it("handles CR and CRLF line endings", () => {
+    assert.deepEqual(parseCSV("a,b\r1,2\r\n3,4"), [["a", "b"], [1, 2], [3, 4]]);
+  });
 });
 
 // ─── Worker fetch handler (HTTP shell) ───────────────────────────

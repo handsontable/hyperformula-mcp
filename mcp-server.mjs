@@ -127,7 +127,16 @@ async function handleCalcFormulas(args) {
     lines.push(`  ${args.formulas[i]} = ${display}`);
   }
   if (json.meta.columns) {
-    lines.push("", "Available columns: " + Object.keys(json.meta.columns).filter(k => !k.includes("_") || !json.meta.columns[k].namedExpression || json.meta.columns[k].namedExpression === k).join(", "));
+    // columnMap lists each column under its original name first, then (if
+    // different) its sanitized name — keep the first key per column index.
+    const seen = new Set();
+    const names = [];
+    for (const [key, info] of Object.entries(json.meta.columns)) {
+      if (seen.has(info.index)) continue;
+      seen.add(info.index);
+      names.push(key);
+    }
+    lines.push("", "Available columns: " + names.join(", "));
   }
 
   if (args.output_file) {
@@ -204,7 +213,7 @@ async function handleCalcGrid(args) {
 // --- MCP server ---
 
 const server = new Server(
-  { name: "hyperformula-calc", version: "0.4.0" },
+  { name: "hyperformula-calc", version: "0.5.0" },
   { capabilities: { tools: {} } }
 );
 

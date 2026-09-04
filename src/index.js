@@ -65,9 +65,18 @@ const RATE_WINDOW_MS = 60_000; // 1 minute
 // Per-isolate and ephemeral, same practical scope as the previous per-instance
 // Netlify function. Good enough for basic abuse protection; not a global limit.
 const ipHits = new Map();
+const RATE_MAP_SWEEP_SIZE = 10_000;
 
 function rateLimit(ip) {
   const now = Date.now();
+  // Evict idle IPs so the map can't grow unbounded over an isolate's lifetime
+  if (ipHits.size > RATE_MAP_SWEEP_SIZE) {
+    for (const [key, rec] of ipHits) {
+      if (rec.timestamps.length === 0 || rec.timestamps[rec.timestamps.length - 1] <= now - RATE_WINDOW_MS) {
+        ipHits.delete(key);
+      }
+    }
+  }
   let record = ipHits.get(ip);
   if (!record) {
     record = { timestamps: [] };
@@ -161,12 +170,13 @@ export function parseCSV(text) {
       } else if (ch === ",") {
         row.push(autoType(cell));
         cell = "";
-      } else if (ch === "\n" || (ch === "\r" && text[i + 1] === "\n")) {
+      } else if (ch === "\n" || ch === "\r") {
         row.push(autoType(cell));
         cell = "";
-        if (row.length > 0) rows.push(row);
+        // Skip fully blank lines instead of emitting [null] rows
+        if (row.length > 1 || row[0] !== null) rows.push(row);
         row = [];
-        if (ch === "\r") i++; // skip \n in \r\n
+        if (ch === "\r" && text[i + 1] === "\n") i++; // skip \n in \r\n
       } else {
         cell += ch;
       }
@@ -289,7 +299,8 @@ function evaluateGroupBy(hf, sheetId, normalized, columnMap, groupBy, sheetName)
   const groups = [];
   for (let r = 1; r < normalized.length; r++) {
     const val = normalized[r][byColIdx];
-    const key = val == null ? "" : String(val);
+    if (val == null) continue; // blank group values are skipped (no reliable SUMIF criterion for blanks)
+    const key = String(val);
     if (!seen.has(key)) {
       seen.add(key);
       groups.push({ key, raw: val });
@@ -401,7 +412,7 @@ function unwrapValue(v) {
 
 const API_SCHEMA = {
   name: "HyperFormula Edge Calc Service",
-  version: "0.3.0",
+  version: "0.5.0",
   description: "Stateless spreadsheet calculation API. Send data (JSON or CSV) and formulas, get computed results. Supports 400+ Excel-compatible functions, named columns, and declarative groupBy aggregation.",
   endpoint: "/api/calc",
   method: "POST",
@@ -434,7 +445,7 @@ const API_SCHEMA = {
     groupBy: {
       type: "object",
       required: false,
-      description: "Declarative aggregation. Groups data by a column and computes aggregates per group. Requires headers:true. Mutually exclusive with formulas. Returns array of {group, ...aggregates} objects.",
+      description: "Declarative aggregation. Groups data by a column and computes aggregates per group. Requires headers:true. Mutually exclusive with formulas. Returns array of {group, ...aggregates} objects. Rows with a blank value in the 'by' column are skipped.",
       properties: {
         by: { type: "string", description: "Column name to group by" },
         aggregates: { type: "object", description: "Map of column name → aggregate function. Supported: SUM, AVERAGE, COUNT, MIN, MAX, MEDIAN" },
@@ -457,7 +468,8 @@ const API_SCHEMA = {
     "SUM", "AVERAGE", "COUNT", "COUNTA", "COUNTIF", "COUNTIFS",
     "SUMIF", "SUMIFS", "MIN", "MAX", "MEDIAN",
     "IF", "IFS", "IFERROR", "AND", "OR", "NOT",
-    "VLOOKUP", "HLOOKUP", "INDEX", "MATCH",
+    "VLOOKUP", "HLOOKUP", "XLOOKUP", "INDEX", "MATCH",
+    "UNIQUE", "SORT", "FILTER",
     "LEFT", "RIGHT", "MID", "LEN", "TRIM", "CONCATENATE", "SUBSTITUTE",
     "ROUND", "ROUNDUP", "ROUNDDOWN", "ABS", "MOD", "POWER",
     "DATE", "YEAR", "MONTH", "DAY", "TODAY", "NOW",
@@ -466,7 +478,6 @@ const API_SCHEMA = {
   columnReference: "Columns are letters: A=0, B=1, C=2, ... Z=25, AA=26. Rows are 1-indexed. With headers:true, use column names directly in formulas instead of cell references.",
   links: {
     openapi: "/openapi.json",
-    aiPlugin: "/.well-known/ai-plugin.json",
     formulaDocs: "https://hyperformula.handsontable.com/guide/built-in-functions.html",
   },
 };
