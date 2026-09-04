@@ -1,8 +1,15 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import * as fs from "fs";
 import { readFileSync } from "fs";
 import XLSX from "xlsx";
+import * as cpexcel from "xlsx/dist/cpexcel.full.mjs";
+
+// The SheetJS ESM build does not auto-load Node modules: fs must be wired in
+// for readFile/writeFile, and the codepage table for legacy .xls files.
+XLSX.set_fs(fs);
+XLSX.set_cptable(cpexcel);
 
 const API_URL = process.env.HYPERFORMULA_API_URL || "https://hyperformula-mcp.handsontable-sandbox.workers.dev/api/calc";
 
