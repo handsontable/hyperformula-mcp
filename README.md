@@ -102,21 +102,13 @@ The included MCP server gives AI agents like Claude native tool access. All requ
 | `calc_groupby` | Declarative group-by aggregation |
 | `calc_grid` | Evaluate embedded formulas in a grid |
 
-**Claude Desktop** — add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+**Claude Code** — the repo ships a project-scoped [`.mcp.json`](.mcp.json), so after `git clone` + `npm install` the server is available automatically when you run `claude` inside the repo. To register it from another project:
 
-```json
-{
-  "mcpServers": {
-    "hyperformula": {
-      "type": "stdio",
-      "command": "node",
-      "args": ["/path/to/hyperformula-mcp/mcp-server.mjs"]
-    }
-  }
-}
+```bash
+claude mcp add hyperformula -- node /path/to/hyperformula-mcp/mcp-server.mjs
 ```
 
-**Claude Code** — add to `.claude/settings.json`:
+**Claude Desktop** — add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 {
@@ -171,7 +163,7 @@ is a no-op.
 | `data` | array[] | 2D JSON array. Mutually exclusive with `csv`. |
 | `headers` | boolean | When `true`, row 1 = column names usable in formulas. Required for `groupBy`. |
 | `formulas` | string[] | Array of formulas (each starting with `=`). Returns array of results. |
-| `groupBy` | object | `{by: "column", aggregates: {col: "SUM"}}`. Requires `headers: true`. |
+| `groupBy` | object | `{by: "column", aggregates: {col: "SUM"}}`. Requires `headers: true`. Rows with a blank `by` value are skipped. |
 
 ### Limits
 
@@ -192,7 +184,8 @@ is a no-op.
 
 **Math**: SUM, AVERAGE, MIN, MAX, MEDIAN, COUNT, COUNTA, ROUND, ABS, MOD, POWER
 **Conditional**: IF, IFS, IFERROR, AND, OR, NOT, COUNTIF, COUNTIFS, SUMIF, SUMIFS, AVERAGEIF
-**Lookup**: VLOOKUP, HLOOKUP, INDEX, MATCH
+**Lookup**: VLOOKUP, HLOOKUP, XLOOKUP, INDEX, MATCH
+**Array**: UNIQUE, SORT, FILTER, VSTACK, HSTACK
 **Text**: LEFT, RIGHT, MID, LEN, TRIM, CONCATENATE, SUBSTITUTE, TEXT
 **Date**: DATE, YEAR, MONTH, DAY, TODAY, NOW
 **Statistical**: LARGE, SMALL, RANK, SUMPRODUCT
@@ -220,7 +213,6 @@ The API is designed to be easily discovered and used by AI agents:
 
 - **`GET /api/calc`** — Full API schema as JSON with parameters, examples, supported formulas, and limits
 - **`/openapi.json`** — OpenAPI 3.1 specification
-- **`/.well-known/ai-plugin.json`** — AI plugin manifest for ChatGPT-style plugin discovery
 
 ---
 
@@ -252,8 +244,8 @@ The API is designed to be easily discovered and used by AI agents:
 - **Stateless**: No database, no sessions. Each request is independent.
 - **Edge-deployable**: Runs as a Cloudflare Worker (static assets + API in one Worker). Deploy anywhere that supports Node-compatible serverless.
 - **Rate limited**: 60 req/min per IP with sliding window. Headers expose remaining quota.
-- **Hardened**: 5s evaluation timeout, formula length/count limits, CSV cell size caps, sanitized error messages.
-- **Observable**: PostHog analytics track formula types, modes, row counts, and durations. Data is never stored or logged.
+- **Hardened**: requests whose evaluation exceeds 5s are rejected (backed by the Workers CPU cap), formula length/count limits, CSV cell size caps, sanitized error messages.
+- **Observable**: PostHog analytics capture submitted formulas, execution modes, row counts, and durations. Dataset contents are processed in memory and never stored.
 
 ---
 
@@ -276,7 +268,7 @@ Times are server-side `durationMs` (excludes network and CSV parsing overhead).
 
 ## Privacy
 
-This service runs as a serverless edge function. Your data is processed in-memory and never stored. We collect anonymous usage analytics on formula types, execution modes, row counts, and durations. The actual dataset content is never logged or transmitted to analytics.
+This service runs as a serverless edge function. Your data is processed in-memory and never stored. We collect anonymous usage analytics: the formulas submitted, execution modes, row counts, and durations.
 
 ---
 
