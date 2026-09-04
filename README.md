@@ -6,6 +6,7 @@ Send data and Excel-compatible formulas to a single API endpoint and get compute
 
 **Live API**: https://hyperformula-mcp.handsontable-sandbox.workers.dev
 **API Schema**: https://hyperformula-mcp.handsontable-sandbox.workers.dev/api/calc (GET)
+**Remote MCP**: https://hyperformula-mcp.handsontable-sandbox.workers.dev/mcp
 **Repo**: https://github.com/handsontable/hyperformula-mcp
 
 > Hosted as a Cloudflare Worker on the Handsontable sandbox account. The API is
@@ -91,9 +92,13 @@ The hosted API at `https://hyperformula-mcp.handsontable-sandbox.workers.dev/api
 
 Rate limited to 60 requests/minute per IP. Responses include `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset` headers.
 
-### Option 2: MCP Server (for AI agents)
+### Option 2: Remote MCP Server (zero install)
 
-The included MCP server gives AI agents like Claude native tool access. All requests flow through the hosted API, so rate limiting and analytics still apply.
+The Worker exposes a hosted MCP endpoint (Streamable HTTP, stateless) — connect any MCP client with just the URL, no clone or install:
+
+```
+https://hyperformula-mcp.handsontable-sandbox.workers.dev/mcp
+```
 
 **Tools available:**
 | Tool | Description |
@@ -102,10 +107,24 @@ The included MCP server gives AI agents like Claude native tool access. All requ
 | `calc_groupby` | Declarative group-by aggregation |
 | `calc_grid` | Evaluate embedded formulas in a grid |
 
+**Claude Code:**
+
+```bash
+claude mcp add --transport http hyperformula https://hyperformula-mcp.handsontable-sandbox.workers.dev/mcp
+```
+
+**claude.ai / Claude Desktop** — add the URL above as a custom connector (Settings → Connectors → Add custom connector). No authentication required.
+
+Rate limiting and analytics apply the same as the HTTP API.
+
+### Option 3: Local MCP Server (for .xlsx files)
+
+The included stdio MCP server adds local-file superpowers the remote endpoint can't have: pass a `.xlsx`/`.xls`/`.csv` path via the `file` parameter, and write results back with `output_file`. Data flows through the hosted API for computation.
+
 **Claude Code** — the repo ships a project-scoped [`.mcp.json`](.mcp.json), so after `git clone` + `npm install` the server is available automatically when you run `claude` inside the repo. To register it from another project:
 
 ```bash
-claude mcp add hyperformula -- node /path/to/hyperformula-mcp/mcp-server.mjs
+claude mcp add hyperformula-local -- node /path/to/hyperformula-mcp/mcp-server.mjs
 ```
 
 **Claude Desktop** — add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
@@ -122,9 +141,9 @@ claude mcp add hyperformula -- node /path/to/hyperformula-mcp/mcp-server.mjs
 }
 ```
 
-To point the MCP server at a different API (e.g. self-hosted), set the `HYPERFORMULA_API_URL` environment variable.
+To point the local MCP server at a different API (e.g. self-hosted), set the `HYPERFORMULA_API_URL` environment variable.
 
-### Option 3: Self-Hosted
+### Option 4: Self-Hosted
 
 The service is a single Cloudflare Worker (`src/index.js`) that serves the static
 files in `public/` via the ASSETS binding **and** runs the `/api/calc` logic
@@ -219,26 +238,30 @@ The API is designed to be easily discovered and used by AI agents:
 ## Architecture
 
 ```
-┌─────────────────┐     ┌──────────────────────────────┐
-│  MCP Client     │     │  Any HTTP Client              │
-│  (Claude, etc.) │     │  (curl, fetch, Python, etc.)  │
-└────────┬────────┘     └──────────────┬───────────────┘
-         │ stdio                       │ HTTPS
-         ▼                             ▼
-┌─────────────────┐     ┌──────────────────────────────┐
-│  mcp-server.mjs │────▶│  POST /api/calc              │
-│  (thin wrapper) │     │  Cloudflare Worker            │
-└─────────────────┘     └──────────────┬───────────────┘
-                                       │
-                        ┌──────────────▼───────────────┐
-                        │  HyperFormula Engine          │
-                        │  (stateless, per-request)     │
-                        └──────────────┬───────────────┘
-                                       │
-                        ┌──────────────▼───────────────┐
-                        │  PostHog Analytics            │
-                        │  (anonymous, formulas only)   │
-                        └──────────────────────────────┘
+┌──────────────────┐  ┌─────────────────┐  ┌───────────────────────┐
+│  MCP Client      │  │  MCP Client     │  │  Any HTTP Client      │
+│  (remote, URL)   │  │  (local files)  │  │  (curl, fetch, ...)   │
+└────────┬─────────┘  └────────┬────────┘  └──────────┬────────────┘
+         │ HTTPS               │ stdio                │ HTTPS
+         │            ┌────────▼────────┐             │
+         │            │  mcp-server.mjs │             │
+         │            │  (.xlsx/.csv IO)│             │
+         │            └────────┬────────┘             │
+         ▼                     ▼ HTTPS                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Cloudflare Worker                                              │
+│  POST /mcp (Streamable HTTP)          POST /api/calc            │
+└──────────────────────────────┬──────────────────────────────────┘
+                               │
+                ┌──────────────▼───────────────┐
+                │  HyperFormula Engine          │
+                │  (stateless, per-request)     │
+                └──────────────┬───────────────┘
+                               │
+                ┌──────────────▼───────────────┐
+                │  PostHog Analytics            │
+                │  (anonymous, formulas only)   │
+                └──────────────────────────────┘
 ```
 
 - **Stateless**: No database, no sessions. Each request is independent.
