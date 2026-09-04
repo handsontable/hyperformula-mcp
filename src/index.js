@@ -22,8 +22,9 @@ function capture(env, ctx, distinctId, event, properties) {
   );
 }
 
-function trackEval(env, ctx, clientIp, body, result) {
+function trackEval(env, ctx, clientIp, body, result, transport = "http") {
   const props = {
+    transport,
     mode: result.mode,
     input_type: body.csv !== undefined ? "csv" : "data",
     headers: !!body.headers,
@@ -478,6 +479,7 @@ const API_SCHEMA = {
   columnReference: "Columns are letters: A=0, B=1, C=2, ... Z=25, AA=26. Rows are 1-indexed. With headers:true, use column names directly in formulas instead of cell references.",
   links: {
     openapi: "/openapi.json",
+    mcp: "/mcp",
     formulaDocs: "https://hyperformula.handsontable.com/guide/built-in-functions.html",
   },
 };
@@ -491,6 +493,83 @@ function evalWithTimeout(args) {
     throw { type: "EVALUATION_TIMEOUT" };
   }
   return result;
+}
+
+// --- Shared request-body processing (used by the HTTP API and the MCP endpoint) ---
+
+function processCalcBody(body) {
+  const { data: rawData, csv, formulas, headers, groupBy } = body;
+
+  function invalid(status, type, message) {
+    return { ok: false, status, type, message };
+  }
+
+  // Resolve data from 'data' or 'csv'
+  if (rawData !== undefined && csv !== undefined) {
+    return invalid(400, "INVALID_PARAMS", "Provide either 'data' or 'csv', not both");
+  }
+
+  let data;
+  if (csv !== undefined) {
+    if (typeof csv !== "string" || csv.trim() === "") {
+      return invalid(400, "INVALID_CSV", "csv must be a non-empty string");
+    }
+    try {
+      data = parseCSV(csv);
+    } catch (e) {
+      return invalid(400, e.type || "INVALID_CSV", e.message || "Could not parse csv");
+    }
+    if (data.length === 0) return invalid(400, "INVALID_CSV", "csv produced no rows");
+  } else {
+    data = rawData;
+  }
+
+  // Validate data
+  const dataErr = validateData(data);
+  if (dataErr) return invalid(400, "INVALID_DATA", dataErr);
+
+  // Validate mutual exclusivity
+  if (formulas !== undefined && groupBy !== undefined) {
+    return invalid(400, "INVALID_PARAMS", "Provide either 'formulas' or 'groupBy', not both");
+  }
+
+  // Validate groupBy
+  if (groupBy !== undefined) {
+    if (!headers) return invalid(400, "INVALID_GROUPBY", "groupBy requires headers: true");
+    if (!groupBy.by || typeof groupBy.by !== "string") return invalid(400, "INVALID_GROUPBY", "groupBy.by must be a column name string");
+    if (!groupBy.aggregates || typeof groupBy.aggregates !== "object" || Object.keys(groupBy.aggregates).length === 0) {
+      return invalid(400, "INVALID_GROUPBY", "groupBy.aggregates must be a non-empty object mapping column names to aggregate functions");
+    }
+  }
+
+  // Validate formulas array if provided
+  if (formulas !== undefined) {
+    if (!Array.isArray(formulas) || formulas.length === 0) {
+      return invalid(400, "INVALID_FORMULAS", "formulas must be a non-empty array");
+    }
+    if (formulas.length > MAX_FORMULAS) {
+      return invalid(400, "INVALID_FORMULAS", `formulas exceeds maximum of ${MAX_FORMULAS}`);
+    }
+    for (let i = 0; i < formulas.length; i++) {
+      if (typeof formulas[i] !== "string" || !formulas[i].startsWith("=")) {
+        return invalid(400, "INVALID_FORMULAS", `formulas[${i}] must be a string starting with '='`);
+      }
+      if (formulas[i].length > MAX_FORMULA_LENGTH) {
+        return invalid(400, "INVALID_FORMULAS", `formulas[${i}] exceeds maximum of ${MAX_FORMULA_LENGTH} characters`);
+      }
+    }
+  }
+
+  try {
+    return { ok: true, result: evalWithTimeout({ data, formulas, headers, groupBy }) };
+  } catch (err) {
+    if (err.type === "EVALUATION_TIMEOUT") {
+      return invalid(408, "EVALUATION_TIMEOUT", `Evaluation exceeded ${EVAL_TIMEOUT_MS / 1000}s limit`);
+    }
+    const safeType = err.type || "EVALUATION_ERROR";
+    const safeMessage = err.type ? (err.message || "Evaluation failed") : "Evaluation failed";
+    return invalid(422, safeType, safeMessage);
+  }
 }
 
 // --- API handler (POST/GET /api/calc) ---
@@ -573,78 +652,222 @@ async function handleCalc(request, env, ctx) {
     return fail(400, "INVALID_JSON", "Could not parse request body as JSON");
   }
 
-  const { data: rawData, csv, formulas, headers, groupBy } = body;
-
-  // Resolve data from 'data' or 'csv'
-  if (rawData !== undefined && csv !== undefined) {
-    return fail(400, "INVALID_PARAMS", "Provide either 'data' or 'csv', not both");
+  const outcome = processCalcBody(body);
+  if (!outcome.ok) {
+    if (outcome.status >= 408) trackError(env, ctx, clientIp, outcome.type);
+    return fail(outcome.status, outcome.type, outcome.message);
   }
+  trackEval(env, ctx, clientIp, body, outcome.result);
+  return new Response(JSON.stringify(outcome.result), { status: 200, headers: h });
+}
 
-  let data;
-  if (csv !== undefined) {
-    if (typeof csv !== "string" || csv.trim() === "") {
-      return fail(400, "INVALID_CSV", "csv must be a non-empty string");
-    }
-    try {
-      data = parseCSV(csv);
-    } catch (e) {
-      return fail(400, e.type || "INVALID_CSV", e.message || "Could not parse csv");
-    }
-    if (data.length === 0) return fail(400, "INVALID_CSV", "csv produced no rows");
-  } else {
-    data = rawData;
+// --- Remote MCP endpoint (Streamable HTTP, stateless) ---
+//
+// A minimal MCP server implemented directly on the Worker: POST /mcp accepts
+// JSON-RPC messages and always answers with application/json (no SSE stream,
+// no sessions — every tool call is a single stateless request, which is
+// exactly what this service is). Clients connect with just the URL.
+
+const MCP_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
+const MCP_SERVER_INFO = { name: "hyperformula-calc", version: "0.5.0" };
+
+const MCP_DATA_PARAMS = {
+  csv: { type: "string", description: "Raw CSV string. Numeric values auto-detected. Use this OR data, not both." },
+  data: { type: "array", items: { type: "array" }, description: "2D JSON array. Use this OR csv, not both." },
+};
+
+const MCP_TOOLS = [
+  {
+    name: "calc_formulas",
+    description:
+      "Evaluate spreadsheet formulas against a dataset. Send data as a CSV string or JSON 2D array. With headers:true, formulas can reference column names (e.g. =SUM(Revenue)). Supports 400+ Excel-compatible functions: SUM, AVERAGE, COUNTIF, VLOOKUP, XLOOKUP, IF, SUMPRODUCT, etc. Up to 50,000 rows.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...MCP_DATA_PARAMS,
+        headers: { type: "boolean", description: "When true, row 1 = column names usable in formulas (e.g. =SUM(Revenue))." },
+        formulas: { type: "array", items: { type: "string" }, description: "Array of formulas to evaluate (each starting with '='). Returns results in same order." },
+      },
+      required: ["formulas"],
+    },
+  },
+  {
+    name: "calc_groupby",
+    description:
+      "Aggregate data by groups. Groups rows by a column and computes SUM, AVERAGE, COUNT, MIN, MAX, or MEDIAN per group. Data must include a header row. Returns one row per group.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...MCP_DATA_PARAMS,
+        by: { type: "string", description: "Column name to group by." },
+        aggregates: {
+          type: "object",
+          additionalProperties: { type: "string", enum: ["SUM", "AVERAGE", "COUNT", "MIN", "MAX", "MEDIAN"] },
+          description: "Map of column name to aggregate function.",
+        },
+      },
+      required: ["by", "aggregates"],
+    },
+  },
+  {
+    name: "calc_grid",
+    description:
+      "Evaluate a grid with embedded formulas. Formulas in cells (strings starting with '=') are computed and the full grid is returned with values resolved. Useful for building spreadsheet-like calculations.",
+    inputSchema: {
+      type: "object",
+      properties: MCP_DATA_PARAMS,
+    },
+  },
+];
+
+function displayValue(v) {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "object" && v.error) return `ERROR: ${v.error}`;
+  return String(v);
+}
+
+function mcpToolBody(name, args) {
+  const source = {};
+  if (args.csv !== undefined) source.csv = args.csv;
+  if (args.data !== undefined) source.data = args.data;
+
+  if (name === "calc_formulas") {
+    return { ...source, headers: !!args.headers || undefined, formulas: args.formulas };
   }
-
-  // Validate data
-  const dataErr = validateData(data);
-  if (dataErr) return fail(400, "INVALID_DATA", dataErr);
-
-  // Validate mutual exclusivity
-  if (formulas !== undefined && groupBy !== undefined) {
-    return fail(400, "INVALID_PARAMS", "Provide either 'formulas' or 'groupBy', not both");
+  if (name === "calc_groupby") {
+    return { ...source, headers: true, groupBy: { by: args.by, aggregates: args.aggregates } };
   }
+  return source; // calc_grid
+}
 
-  // Validate groupBy
-  if (groupBy !== undefined) {
-    if (!headers) return fail(400, "INVALID_GROUPBY", "groupBy requires headers: true");
-    if (!groupBy.by || typeof groupBy.by !== "string") return fail(400, "INVALID_GROUPBY", "groupBy.by must be a column name string");
-    if (!groupBy.aggregates || typeof groupBy.aggregates !== "object" || Object.keys(groupBy.aggregates).length === 0) {
-      return fail(400, "INVALID_GROUPBY", "groupBy.aggregates must be a non-empty object mapping column names to aggregate functions");
+function formatMcpResult(name, args, json) {
+  if (name === "calc_formulas") {
+    const lines = [`Results (${json.meta.durationMs}ms, ${json.meta.rows} rows):`];
+    for (let i = 0; i < args.formulas.length; i++) {
+      lines.push(`  ${args.formulas[i]} = ${displayValue(json.result[i])}`);
     }
+    return lines.join("\n");
   }
+  if (name === "calc_groupby") {
+    const aggCols = Object.keys(args.aggregates);
+    const lines = [`GroupBy '${args.by}' (${json.meta.groups} groups, ${json.meta.durationMs}ms):`, ""];
+    lines.push(["group", ...aggCols].join("\t"));
+    for (const r of json.result) {
+      lines.push([displayValue(r.group), ...aggCols.map((c) => displayValue(r[c]))].join("\t"));
+    }
+    return lines.join("\n");
+  }
+  const lines = [`Evaluated grid (${json.meta.rows}x${json.meta.cols}, ${json.meta.durationMs}ms):`, ""];
+  for (const row of json.result) {
+    lines.push(row.map(displayValue).join("\t"));
+  }
+  return lines.join("\n");
+}
 
-  // Validate formulas array if provided
-  if (formulas !== undefined) {
-    if (!Array.isArray(formulas) || formulas.length === 0) {
-      return fail(400, "INVALID_FORMULAS", "formulas must be a non-empty array");
+function handleMcpMessage(msg, env, ctx, clientIp) {
+  // Notifications (no id) get no response
+  if (msg.id === undefined || msg.id === null) return null;
+
+  const rpcError = (code, message) => ({ jsonrpc: "2.0", id: msg.id, error: { code, message } });
+  const rpcResult = (result) => ({ jsonrpc: "2.0", id: msg.id, result });
+
+  switch (msg.method) {
+    case "initialize": {
+      const requested = msg.params?.protocolVersion;
+      const protocolVersion = MCP_PROTOCOL_VERSIONS.includes(requested) ? requested : MCP_PROTOCOL_VERSIONS[0];
+      return rpcResult({ protocolVersion, capabilities: { tools: {} }, serverInfo: MCP_SERVER_INFO });
     }
-    if (formulas.length > MAX_FORMULAS) {
-      return fail(400, "INVALID_FORMULAS", `formulas exceeds maximum of ${MAX_FORMULAS}`);
-    }
-    for (let i = 0; i < formulas.length; i++) {
-      if (typeof formulas[i] !== "string" || !formulas[i].startsWith("=")) {
-        return fail(400, "INVALID_FORMULAS", `formulas[${i}] must be a string starting with '='`);
+    case "ping":
+      return rpcResult({});
+    case "tools/list":
+      return rpcResult({ tools: MCP_TOOLS });
+    case "tools/call": {
+      const name = msg.params?.name;
+      const args = msg.params?.arguments ?? {};
+      if (!MCP_TOOLS.some((t) => t.name === name)) {
+        return rpcError(-32602, `Unknown tool: ${name}`);
       }
-      if (formulas[i].length > MAX_FORMULA_LENGTH) {
-        return fail(400, "INVALID_FORMULAS", `formulas[${i}] exceeds maximum of ${MAX_FORMULA_LENGTH} characters`);
+      const toolError = (text) => rpcResult({ content: [{ type: "text", text }], isError: true });
+      if (args.csv === undefined && args.data === undefined) {
+        return toolError("Error: provide 'csv' or 'data'");
+      }
+      if (name === "calc_formulas" && !Array.isArray(args.formulas)) {
+        return toolError("Error: 'formulas' must be an array of formula strings");
+      }
+      try {
+        const body = mcpToolBody(name, args);
+        const outcome = processCalcBody(body);
+        if (!outcome.ok) {
+          if (outcome.status >= 408) trackError(env, ctx, clientIp, outcome.type);
+          return toolError(`Error (${outcome.type}): ${outcome.message}`);
+        }
+        trackEval(env, ctx, clientIp, body, outcome.result, "mcp");
+        return rpcResult({ content: [{ type: "text", text: formatMcpResult(name, args, outcome.result) }] });
+      } catch {
+        return toolError("Error: tool execution failed");
       }
     }
+    default:
+      return rpcError(-32601, `Method not found: ${msg.method}`);
+  }
+}
+
+async function handleMcp(request, env, ctx) {
+  const corsHeaders = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Accept, Authorization, Mcp-Session-Id, MCP-Protocol-Version",
+    "X-Robots-Tag": "noindex",
+  };
+
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: corsHeaders });
   }
 
+  if (request.method !== "POST") {
+    // Stateless server: no SSE stream to GET, no session to DELETE
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32000, message: "Method not allowed. POST JSON-RPC messages to this endpoint." } }), {
+      status: 405,
+      headers: { "Content-Type": "application/json", Allow: "POST, OPTIONS", ...corsHeaders },
+    });
+  }
+
+  const clientIp = (request.headers.get("cf-connecting-ip") || request.headers.get("x-forwarded-for") || "unknown").split(",")[0].trim();
+  const rl = rateLimit(clientIp);
+  const h = { "Content-Type": "application/json", ...rateLimitHeaders(rl), ...corsHeaders };
+  if (!rl.allowed) {
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32000, message: `Rate limit exceeded. Max ${RATE_LIMIT} requests per minute.` } }), {
+      status: 429,
+      headers: { "Retry-After": String(Math.ceil(RATE_WINDOW_MS / 1000)), ...h },
+    });
+  }
+
+  const contentLength = Number(request.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32000, message: `Body exceeds ${MAX_BODY_BYTES} bytes` } }), { status: 413, headers: h });
+  }
+
+  const rawBody = await request.text();
+  if (rawBody.length > MAX_BODY_BYTES) {
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32000, message: `Body exceeds ${MAX_BODY_BYTES} bytes` } }), { status: 413, headers: h });
+  }
+
+  let parsed;
   try {
-    const result = evalWithTimeout({ data, formulas, headers, groupBy });
-    trackEval(env, ctx, clientIp, body, result);
-    return new Response(JSON.stringify(result), { status: 200, headers: h });
-  } catch (err) {
-    if (err.type === "EVALUATION_TIMEOUT") {
-      trackError(env, ctx, clientIp, "EVALUATION_TIMEOUT");
-      return new Response(JSON.stringify({ success: false, error: { type: "EVALUATION_TIMEOUT", message: `Evaluation exceeded ${EVAL_TIMEOUT_MS / 1000}s limit` } }), { status: 408, headers: h });
-    }
-    const safeType = err.type || "EVALUATION_ERROR";
-    const safeMessage = err.type ? (err.message || "Evaluation failed") : "Evaluation failed";
-    trackError(env, ctx, clientIp, safeType);
-    return new Response(JSON.stringify({ success: false, error: { type: safeType, message: safeMessage } }), { status: 422, headers: h });
+    parsed = JSON.parse(rawBody);
+  } catch {
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }), { status: 400, headers: h });
   }
+
+  // Batches were removed in protocol 2025-06-18 but older clients may send them
+  const messages = Array.isArray(parsed) ? parsed : [parsed];
+  const responses = messages.map((m) => handleMcpMessage(m, env, ctx, clientIp)).filter((r) => r !== null);
+
+  if (responses.length === 0) {
+    return new Response(null, { status: 202, headers: h });
+  }
+  const payload = Array.isArray(parsed) ? responses : responses[0];
+  return new Response(JSON.stringify(payload), { status: 200, headers: h });
 }
 
 // --- Worker entry ---
@@ -655,6 +878,10 @@ export default {
 
     if (url.pathname === "/api/calc") {
       return handleCalc(request, env, ctx);
+    }
+
+    if (url.pathname === "/mcp") {
+      return handleMcp(request, env, ctx);
     }
 
     // Everything else is a static asset from ./public (noindex via public/_headers).

@@ -163,3 +163,93 @@ describe("worker fetch handler", () => {
     assert.equal(res.headers.get("access-control-allow-origin"), "*");
   });
 });
+
+// ─── Remote MCP endpoint (/mcp) ──────────────────────────────────
+
+function mcpReq(message) {
+  return req("/mcp", { body: JSON.stringify(message) });
+}
+
+describe("remote MCP endpoint", () => {
+  it("negotiates protocol version on initialize", async () => {
+    const res = await worker.fetch(mcpReq({
+      jsonrpc: "2.0", id: 1, method: "initialize",
+      params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "t", version: "0" } },
+    }), {}, CTX);
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.equal(json.result.protocolVersion, "2025-03-26");
+    assert.equal(json.result.serverInfo.name, "hyperformula-calc");
+    assert.ok(json.result.capabilities.tools);
+  });
+
+  it("falls back to the latest supported protocol version", async () => {
+    const res = await worker.fetch(mcpReq({
+      jsonrpc: "2.0", id: 1, method: "initialize",
+      params: { protocolVersion: "1999-01-01" },
+    }), {}, CTX);
+    const json = await res.json();
+    assert.equal(json.result.protocolVersion, "2025-06-18");
+  });
+
+  it("202s the initialized notification", async () => {
+    const res = await worker.fetch(mcpReq({ jsonrpc: "2.0", method: "notifications/initialized" }), {}, CTX);
+    assert.equal(res.status, 202);
+  });
+
+  it("lists the three calc tools", async () => {
+    const res = await worker.fetch(mcpReq({ jsonrpc: "2.0", id: 2, method: "tools/list" }), {}, CTX);
+    const json = await res.json();
+    assert.deepEqual(json.result.tools.map((t) => t.name), ["calc_formulas", "calc_groupby", "calc_grid"]);
+  });
+
+  it("executes calc_formulas via tools/call", async () => {
+    const res = await worker.fetch(mcpReq({
+      jsonrpc: "2.0", id: 3, method: "tools/call",
+      params: { name: "calc_formulas", arguments: { csv: "v\n10\n20\n30", headers: true, formulas: ["=SUM(v)"] } },
+    }), {}, CTX);
+    const json = await res.json();
+    assert.equal(json.error, undefined);
+    assert.match(json.result.content[0].text, /=SUM\(v\) = 60/);
+  });
+
+  it("executes calc_groupby via tools/call", async () => {
+    const res = await worker.fetch(mcpReq({
+      jsonrpc: "2.0", id: 4, method: "tools/call",
+      params: { name: "calc_groupby", arguments: { csv: "g,v\nx,1\nx,3\ny,10", by: "g", aggregates: { v: "SUM" } } },
+    }), {}, CTX);
+    const json = await res.json();
+    assert.match(json.result.content[0].text, /x\t4/);
+    assert.match(json.result.content[0].text, /y\t10/);
+  });
+
+  it("returns isError content for invalid tool input", async () => {
+    const res = await worker.fetch(mcpReq({
+      jsonrpc: "2.0", id: 5, method: "tools/call",
+      params: { name: "calc_formulas", arguments: { csv: "v\n1", formulas: ["SUM(v)"] } },
+    }), {}, CTX);
+    const json = await res.json();
+    assert.equal(json.result.isError, true);
+    assert.match(json.result.content[0].text, /INVALID_FORMULAS/);
+  });
+
+  it("returns isError when calc_formulas is called without a formulas array", async () => {
+    const res = await worker.fetch(mcpReq({
+      jsonrpc: "2.0", id: 7, method: "tools/call",
+      params: { name: "calc_formulas", arguments: { csv: "v\n1" } },
+    }), {}, CTX);
+    const json = await res.json();
+    assert.equal(json.result.isError, true);
+  });
+
+  it("rejects unknown methods with -32601", async () => {
+    const res = await worker.fetch(mcpReq({ jsonrpc: "2.0", id: 6, method: "resources/list" }), {}, CTX);
+    const json = await res.json();
+    assert.equal(json.error.code, -32601);
+  });
+
+  it("405s GET (no SSE stream, stateless)", async () => {
+    const res = await worker.fetch(req("/mcp", { method: "GET" }), {}, CTX);
+    assert.equal(res.status, 405);
+  });
+});
