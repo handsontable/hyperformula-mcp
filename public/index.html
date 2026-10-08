@@ -489,8 +489,8 @@
                     └─────────────┬──────────────┘
                                   │
                     ┌─────────────▼──────────────┐
-                    │  PostHog Analytics          │
-                    │  (anonymous, formulas only) │
+                    │  Usage Analytics            │
+                    │  (anonymous, usage only)    │
                     └────────────────────────────┘</div>
       <p>The remote MCP endpoint (<code>/mcp</code>) runs on the same Worker — connect any MCP client with just the URL. The local stdio server adds <code>.xlsx</code> file read/write and forwards computation to the hosted API. Rate limiting, hardening, and analytics apply regardless of how the service is accessed.</p>
     </div>
@@ -539,7 +539,7 @@
     &middot; Built by <a href="https://handsontable.com/" target="_blank">Handsontable</a>
     &middot; <a href="https://github.com/handsontable/hyperformula-mcp" target="_blank">Source on GitHub</a>
     <br>
-    <span style="opacity:.7">This service runs as a serverless edge function. Your data is processed in memory and never stored. We collect anonymous usage analytics on submitted formulas and execution metadata.</span>
+    <span style="opacity:.7">This service runs as a serverless edge function. Your data is processed in memory and never stored. We collect anonymous usage analytics (transport, client, mode, size buckets, and which spreadsheet functions are used); formula text, column names, cell values, and raw IP addresses are never sent.</span>
   </div>
 
   <script>
