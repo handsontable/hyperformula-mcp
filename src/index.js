@@ -2,12 +2,48 @@ import { HyperFormula } from "hyperformula";
 import { createHash } from "node:crypto";
 
 // --- Analytics (fetch-based PostHog capture, non-blocking) ---
-// Ported from posthog-node: on Workers we POST directly to the capture endpoint
-// via ctx.waitUntil so it never blocks the response. No-op when the key is unset.
+// On Workers we POST directly to the capture endpoint via ctx.waitUntil so it
+// never blocks the response. No-op when the key is unset.
+//
+// What is captured is deliberately limited to usage shape, never content:
+//   - a daily-rotating hash of the caller's IP (daily active callers, no
+//     persistent identity)
+//   - transport (http / mcp), the User-Agent product token, MCP client name
+//   - mode, input type, size buckets, and which spreadsheet FUNCTIONS appear
+//     in formulas (names only — no formula text, literals, column names, or
+//     cell values)
 const POSTHOG_HOST = "https://us.i.posthog.com";
 
 function anonymousId(ip) {
-  return createHash("sha256").update(ip || "unknown").digest("hex").slice(0, 16);
+  const day = new Date().toISOString().slice(0, 10);
+  return createHash("sha256").update(`${ip || "unknown"}|${day}`).digest("hex").slice(0, 16);
+}
+
+// Bucket a count so dashboards can group by size without exact row counts.
+function sizeBucket(n) {
+  if (n == null) return undefined;
+  if (n <= 10) return "1-10";
+  if (n <= 100) return "11-100";
+  if (n <= 1000) return "101-1k";
+  if (n <= 10000) return "1k-10k";
+  return "10k+";
+}
+
+// Unique spreadsheet function names used across a set of formulas, e.g.
+// ["SUM", "COUNTIF"]. String literals are stripped first so that quoted text
+// such as "Europe" or a customer name never leaks into analytics.
+export function extractFunctions(formulas) {
+  const names = new Set();
+  for (const f of formulas || []) {
+    const noStrings = String(f).replace(/"(?:[^"]|"")*"/g, '""');
+    for (const m of noStrings.matchAll(/([A-Za-z_][A-Za-z0-9_.]*)\s*\(/g)) names.add(m[1].toUpperCase());
+  }
+  return [...names].sort();
+}
+
+function clientToken(userAgent) {
+  // First product token only ("curl/8.7.1", "node", "python-requests/2.32")
+  return (userAgent || "").split(" ")[0].slice(0, 40) || undefined;
 }
 
 function capture(env, ctx, distinctId, event, properties) {
@@ -22,32 +58,45 @@ function capture(env, ctx, distinctId, event, properties) {
   );
 }
 
-function trackEval(env, ctx, clientIp, body, result, transport = "http") {
+function trackEval(env, ctx, clientIp, body, result, { transport = "http", userAgent } = {}) {
   const props = {
     transport,
+    client: clientToken(userAgent),
     mode: result.mode,
     input_type: body.csv !== undefined ? "csv" : "data",
     headers: !!body.headers,
-    rows: result.meta?.rows,
+    rows_bucket: sizeBucket(result.meta?.rows),
     cols: result.meta?.cols,
   };
 
   if (result.mode === "formulas") {
     props.formula_count = body.formulas?.length;
-    props.formulas = body.formulas;
+    props.functions = extractFunctions(body.formulas);
   } else if (result.mode === "grid") {
-    // Skip extracting formulas from embedded data — not worth the complexity
+    const embedded = [];
+    for (const row of body.data || []) for (const v of row || []) if (typeof v === "string" && v.startsWith("=")) embedded.push(v);
+    props.formula_count = embedded.length;
+    props.functions = extractFunctions(embedded);
   } else if (result.mode === "groupBy") {
-    props.groupBy_by = body.groupBy?.by;
-    props.groupBy_aggregates = body.groupBy?.aggregates ? Object.values(body.groupBy.aggregates) : [];
-    props.groupBy_groups = result.meta?.groups;
+    props.aggregates = body.groupBy?.aggregates ? [...new Set(Object.values(body.groupBy.aggregates).map((a) => String(a).toUpperCase()))].sort() : [];
+    props.groups_bucket = sizeBucket(result.meta?.groups);
   }
 
   capture(env, ctx, anonymousId(clientIp), "calc_evaluated", props);
 }
 
-function trackError(env, ctx, clientIp, errorType) {
-  capture(env, ctx, anonymousId(clientIp), "calc_error", { error_type: errorType });
+function trackError(env, ctx, clientIp, errorType, { transport = "http", userAgent } = {}) {
+  capture(env, ctx, anonymousId(clientIp), "calc_error", { transport, client: clientToken(userAgent), error_type: errorType });
+}
+
+// Which MCP clients connect is the most useful adoption signal for the remote
+// endpoint; clientInfo is the client's self-declared product name/version.
+function trackMcpInitialize(env, ctx, clientIp, clientInfo, userAgent) {
+  capture(env, ctx, anonymousId(clientIp), "mcp_initialize", {
+    client_name: String(clientInfo?.name || "unknown").slice(0, 60),
+    client_version: String(clientInfo?.version || "").slice(0, 30),
+    client: clientToken(userAgent),
+  });
 }
 
 // --- Limits ---
@@ -608,12 +657,13 @@ async function handleCalc(request, env, ctx) {
     return fail(400, "INVALID_JSON", "Could not parse request body as JSON");
   }
 
+  const telemetry = { transport: "http", userAgent: request.headers.get("user-agent") };
   const outcome = processCalcBody(body);
   if (!outcome.ok) {
-    if (outcome.status === 422) trackError(env, ctx, clientIp, outcome.type);
+    if (outcome.status === 422) trackError(env, ctx, clientIp, outcome.type, telemetry);
     return fail(outcome.status, outcome.type, outcome.message);
   }
-  trackEval(env, ctx, clientIp, body, outcome.result);
+  trackEval(env, ctx, clientIp, body, outcome.result, telemetry);
   return new Response(JSON.stringify(outcome.result), { status: 200, headers: h });
 }
 
@@ -720,7 +770,7 @@ function formatMcpResult(name, args, json) {
   return lines.join("\n");
 }
 
-function handleMcpMessage(msg, env, ctx, clientIp) {
+function handleMcpMessage(msg, env, ctx, clientIp, userAgent) {
   // Notifications (no id) get no response
   if (msg.id === undefined || msg.id === null) return null;
 
@@ -731,6 +781,7 @@ function handleMcpMessage(msg, env, ctx, clientIp) {
     case "initialize": {
       const requested = msg.params?.protocolVersion;
       const protocolVersion = MCP_PROTOCOL_VERSIONS.includes(requested) ? requested : MCP_PROTOCOL_VERSIONS[0];
+      trackMcpInitialize(env, ctx, clientIp, msg.params?.clientInfo, userAgent);
       return rpcResult({ protocolVersion, capabilities: { tools: {} }, serverInfo: MCP_SERVER_INFO });
     }
     case "ping":
@@ -753,11 +804,12 @@ function handleMcpMessage(msg, env, ctx, clientIp) {
       try {
         const body = mcpToolBody(name, args);
         const outcome = processCalcBody(body);
+        const telemetry = { transport: "mcp", userAgent };
         if (!outcome.ok) {
-          if (outcome.status === 422) trackError(env, ctx, clientIp, outcome.type);
+          if (outcome.status === 422) trackError(env, ctx, clientIp, outcome.type, telemetry);
           return toolError(`Error (${outcome.type}): ${outcome.message}`);
         }
-        trackEval(env, ctx, clientIp, body, outcome.result, "mcp");
+        trackEval(env, ctx, clientIp, body, outcome.result, telemetry);
         return rpcResult({ content: [{ type: "text", text: formatMcpResult(name, args, outcome.result) }] });
       } catch {
         return toolError("Error: tool execution failed");
@@ -816,7 +868,8 @@ async function handleMcp(request, env, ctx) {
 
   // Batches were removed in protocol 2025-06-18 but older clients may send them
   const messages = Array.isArray(parsed) ? parsed : [parsed];
-  const responses = messages.map((m) => handleMcpMessage(m, env, ctx, clientIp)).filter((r) => r !== null);
+  const userAgent = request.headers.get("user-agent");
+  const responses = messages.map((m) => handleMcpMessage(m, env, ctx, clientIp, userAgent)).filter((r) => r !== null);
 
   if (responses.length === 0) {
     return new Response(null, { status: 202, headers: h });
