@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import worker, { evaluate, parseCSV } from "../src/index.js";
+import worker, { evaluate, parseCSV, extractFunctions } from "../src/index.js";
 
 // The deployed logic is the pure `evaluate()` core (shared by the Cloudflare
 // Worker in src/index.js). These tests exercise it directly against the current
@@ -139,6 +139,49 @@ describe("parseCSV", () => {
 
   it("handles CR and CRLF line endings", () => {
     assert.deepEqual(parseCSV("a,b\r1,2\r\n3,4"), [["a", "b"], [1, 2], [3, 4]]);
+  });
+});
+
+// ─── Analytics helpers ───────────────────────────────────────────
+
+describe("extractFunctions", () => {
+  it("returns unique uppercase function names and drops string literals", () => {
+    const fns = extractFunctions(['=SUM(Revenue)', '=countif(Region,"SUM(x)")', '=IF(A1>0,ROUND(A1,2),"n/a")', '=SUM(A1:A3)']);
+    assert.deepEqual(fns, ["COUNTIF", "IF", "ROUND", "SUM"]);
+  });
+
+  it("does not treat a quoted customer name as a function", () => {
+    assert.deepEqual(extractFunctions(['=COUNTIF(Name,"Acme (EU)")']), ["COUNTIF"]);
+  });
+});
+
+describe("analytics payload", () => {
+  it("sends usage shape only, never formula text, cell values, or raw IP", async () => {
+    const sent = [];
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => { sent.push(JSON.parse(init.body)); return new Response("ok"); };
+    try {
+      const body = JSON.stringify({ csv: "Customer,Revenue\nAcme Corp,100\nGlobex,200", headers: true, formulas: ['=SUMIF(Customer,"Acme Corp",Revenue)'] });
+      const res = await worker.fetch(
+        req("/api/calc", { body, headers: { "cf-connecting-ip": "203.0.113.9", "user-agent": "curl/8.7.1 (x86_64)" } }),
+        { POSTHOG_API_KEY: "test-key" },
+        { waitUntil: (p) => p }
+      );
+      assert.equal(res.status, 200);
+      await new Promise((r) => setTimeout(r, 0));
+      assert.equal(sent.length, 1);
+      const ev = sent[0];
+      assert.equal(ev.event, "calc_evaluated");
+      assert.deepEqual(ev.properties.functions, ["SUMIF"]);
+      assert.equal(ev.properties.client, "curl/8.7.1");
+      assert.equal(ev.properties.rows_bucket, "1-10");
+      const text = JSON.stringify(ev);
+      for (const leak of ["Acme", "Globex", "Customer", "Revenue", "203.0.113.9", "SUMIF("]) {
+        assert.ok(!text.includes(leak), `analytics payload leaked: ${leak}`);
+      }
+    } finally {
+      globalThis.fetch = origFetch;
+    }
   });
 });
 

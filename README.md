@@ -256,8 +256,8 @@ The API is designed to be easily discovered and used by AI agents:
                 └──────────────┬───────────────┘
                                │
                 ┌──────────────▼───────────────┐
-                │  PostHog Analytics            │
-                │  (anonymous, formulas only)   │
+                │  Usage Analytics              │
+                │  (anonymous, usage only)      │
                 └──────────────────────────────┘
 ```
 
@@ -265,7 +265,7 @@ The API is designed to be easily discovered and used by AI agents:
 - **Edge-deployable**: Runs as a Cloudflare Worker (static assets + API in one Worker). Deploy anywhere that supports Node-compatible serverless.
 - **Rate limited**: 60 req/min per IP with sliding window. Headers expose remaining quota.
 - **Hardened**: row/column/body/formula limits, CSV cell size caps, sanitized error messages. Requests that exceed the Workers CPU limit fail at the platform level.
-- **Observable**: PostHog analytics capture submitted formulas, execution modes, and row counts. Dataset contents are processed in memory and never stored.
+- **Observable**: anonymous usage analytics capture how the service is used (transport, client, mode, size buckets, which spreadsheet functions appear in formulas), never what it is used on. See [Privacy](#privacy).
 
 ---
 
@@ -289,7 +289,17 @@ Formulas and grid modes build a full HyperFormula engine instance per request, s
 
 ## Privacy
 
-This service runs as a serverless edge function. Your data is processed in-memory and never stored. We collect anonymous usage analytics: the formulas submitted, execution modes, and row counts.
+This service runs as a serverless edge function. Your data is processed in memory and never stored.
+
+We collect anonymous usage analytics so we can see how the service is used, not what it is used on. Each request records:
+
+- a hash of the caller's IP that rotates daily (so we can count daily callers without a persistent identifier)
+- the transport (HTTP or MCP), the first token of the User-Agent, and for MCP the client's self-declared name and version
+- the mode, input type, row-count bucket (e.g. "1k-10k"), column count, formula count, and the **names of the spreadsheet functions** used (e.g. `SUM`, `COUNTIF`)
+- for groupBy, the aggregate functions used and a group-count bucket
+- error types for failed evaluations
+
+Formula text, string literals, column names, cell values, and raw IP addresses are never sent. Analytics are a no-op when the `POSTHOG_API_KEY` secret is not configured.
 
 ---
 
