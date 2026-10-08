@@ -308,6 +308,7 @@
     .perf-table th { text-align: left; padding: .5rem .75rem; background: #f5f6fa; border: 1px solid #e5e7eb; font-weight: 600; color: #363636; }
     .perf-table td { padding: .5rem .75rem; border: 1px solid #e5e7eb; color: #555; }
     .perf-table td:last-child { font-family: 'SF Mono', monospace; font-size: .8rem; }
+    .perf-table.perf-times th:last-child, .perf-table.perf-times td:last-child { text-align: right; }
 
     /* Footer */
     .footer {
@@ -501,7 +502,7 @@
     <div class="section">
       <h2>Performance</h2>
       <p>Measured against the hosted Worker with a 50,000-row sales dataset (14 columns, 4 MB CSV). Median of three requests, end to end from the client, including upload and server-side CSV parsing.</p>
-      <table class="perf-table">
+      <table class="perf-table perf-times">
         <thead><tr><th>Mode</th><th>Details</th><th>Round trip</th></tr></thead>
         <tbody>
           <tr><td>Formulas + named columns</td><td>7 formulas (SUM, AVERAGE, MAX, COUNTA)</td><td>~12.5 s</td></tr>
