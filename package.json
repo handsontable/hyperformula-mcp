@@ -1,7 +1,8 @@
 {
-  "name": "hf-edge-calc",
-  "version": "0.5.0",
+  "name": "hyperformula-mcp",
+  "version": "0.6.0",
   "private": true,
+  "license": "MIT",
   "description": "HyperFormula Edge Calc Service — stateless spreadsheet calculation API",
   "type": "module",
   "scripts": {
