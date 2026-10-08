@@ -24,7 +24,7 @@
       "post": {
         "operationId": "evaluate",
         "summary": "Evaluate spreadsheet formulas against data",
-        "description": "Send data (as 2D JSON array or CSV string) with formulas. Supports named columns (headers:true) and declarative groupBy aggregation. Five modes: single formula, multi formulas, embedded formulas, groupBy.",
+        "description": "Send data (as 2D JSON array or CSV string) with formulas. Supports named columns (headers:true) and declarative groupBy aggregation. Three modes: formulas, embedded grid, groupBy.",
         "requestBody": {
           "required": true,
           "content": {
@@ -116,7 +116,7 @@
               }
             },
             "required": ["by", "aggregates"]
-          },
+          }
         }
       },
       "CalcResponse": {

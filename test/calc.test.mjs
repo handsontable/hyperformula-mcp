@@ -87,6 +87,14 @@ describe("groupBy mode", () => {
     assert.equal(y.v, 15);
   });
 
+  it("matches group values containing wildcard characters literally", () => {
+    const data = parseCSV("g,v\nA*,1\nAB,2\nA*,3\na?,4\nxy,5");
+    const out = evaluate({ data, headers: true, groupBy: { by: "g", aggregates: { v: "SUM" } } });
+    assert.equal(out.result.find(r => r.group === "A*").v, 4);
+    assert.equal(out.result.find(r => r.group === "AB").v, 2);
+    assert.equal(out.result.find(r => r.group === "a?").v, 4);
+  });
+
   it("throws for an unknown groupBy column", () => {
     assert.throws(() => evaluate({ data: [["a"], [1]], headers: true, groupBy: { by: "missing", aggregates: { a: "SUM" } } }));
   });

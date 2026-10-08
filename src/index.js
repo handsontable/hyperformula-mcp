@@ -63,8 +63,8 @@ const RATE_LIMIT = 60; // requests per window
 const RATE_WINDOW_MS = 60_000; // 1 minute
 
 // --- Rate limiter (in-memory sliding window) ---
-// Per-isolate and ephemeral, same practical scope as the previous per-instance
-// Netlify function. Good enough for basic abuse protection; not a global limit.
+// Per-isolate and ephemeral. Good enough for basic abuse protection; not a
+// global limit.
 const ipHits = new Map();
 const RATE_MAP_SWEEP_SIZE = 10_000;
 
@@ -286,6 +286,16 @@ export function evaluate({ data, formulas, headers, groupBy }) {
   return { success: true, mode, result, meta };
 }
 
+// Build an exact-match SUMIF/COUNTIF criterion for a string group value.
+// Wildcards (*, ?) and the escape char (~) are escaped so a value like "A*"
+// matches only "A*", not every string starting with "A". Values that start
+// with a comparison operator (=, <, >) cannot be expressed as a literal
+// criterion and evaluate to #VALUE! rather than silently matching the wrong rows.
+function sumifCriterion(value) {
+  const escaped = value.replace(/[~*?]/g, (ch) => "~" + ch).replace(/"/g, '""');
+  return `"=${escaped}"`;
+}
+
 function evaluateGroupBy(hf, sheetId, normalized, columnMap, groupBy, sheetName) {
   const { by, aggregates } = groupBy;
   const byInfo = columnMap[by];
@@ -328,7 +338,7 @@ function evaluateGroupBy(hf, sheetId, normalized, columnMap, groupBy, sheetName)
 
   for (let gi = 0; gi < groups.length; gi++) {
     const groupVal = groups[gi].raw;
-    const criterion = typeof groupVal === "string" ? `"${groupVal.replace(/"/g, '""')}"` : String(groupVal);
+    const criterion = typeof groupVal === "string" ? sumifCriterion(groupVal) : String(groupVal);
 
     for (const [aggCol, aggFn] of aggEntries) {
       const aggInfo = columnMap[aggCol];
@@ -631,8 +641,8 @@ async function handleCalc(request, env, ctx) {
   }
 
   // Body size check — reject up front on Content-Length, before reading the
-  // body into memory (a Worker has no platform body cap like Netlify did, so
-  // an oversized payload would otherwise exhaust the isolate before the 413).
+  // body into memory (a Worker has no platform body cap, so an oversized
+  // payload would otherwise exhaust the isolate before the 413).
   const contentLength = Number(request.headers.get("content-length"));
   if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
     return fail(413, "PAYLOAD_TOO_LARGE", `Body exceeds ${MAX_BODY_BYTES} bytes`);

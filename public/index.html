@@ -4,6 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>HyperFormula Edge Calc Service</title>
+  <meta name="description" content="Stateless spreadsheet calculations via HTTP or MCP. Send CSV or JSON data plus Excel-compatible formulas, get computed results back as JSON. Built on HyperFormula.">
+  <meta property="og:title" content="HyperFormula Edge Calc Service">
+  <meta property="og:description" content="Stateless spreadsheet calculations via HTTP or MCP. Formulas instead of code.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://hyperformula-mcp.handsontable-sandbox.workers.dev/">
+  <meta name="twitter:card" content="summary">
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
   <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
@@ -32,6 +38,7 @@
       margin: 0 auto;
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
       gap: 1rem;
     }
     .header-logo {
@@ -529,6 +536,7 @@
   <div class="footer">
     Powered by <a href="https://hyperformula.handsontable.com/" target="_blank">HyperFormula</a>
     &middot; Built by <a href="https://handsontable.com/" target="_blank">Handsontable</a>
+    &middot; <a href="https://github.com/handsontable/hyperformula-mcp" target="_blank">Source on GitHub</a>
     <br>
     <span style="opacity:.7">This service runs as a serverless edge function. Your data is processed in memory and never stored. We collect anonymous usage analytics on submitted formulas and execution metadata.</span>
   </div>
