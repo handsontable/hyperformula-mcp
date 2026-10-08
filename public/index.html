@@ -4,6 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>HyperFormula Edge Calc Service</title>
+  <meta name="description" content="Stateless spreadsheet calculations via HTTP or MCP. Send CSV or JSON data plus Excel-compatible formulas, get computed results back as JSON. Built on HyperFormula.">
+  <meta property="og:title" content="HyperFormula Edge Calc Service">
+  <meta property="og:description" content="Stateless spreadsheet calculations via HTTP or MCP. Formulas instead of code.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://hyperformula-mcp.handsontable-sandbox.workers.dev/">
+  <meta name="twitter:card" content="summary">
   <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
   <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
@@ -32,6 +38,7 @@
       margin: 0 auto;
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
       gap: 1rem;
     }
     .header-logo {
@@ -377,7 +384,7 @@
 
       <div class="mode-card">
         <h3>GroupBy Aggregation</h3>
-        <p class="desc">Declarative grouping with SUM, AVERAGE, COUNT, MIN, MAX, or MEDIAN per column. Requires <code>headers: true</code>.</p>
+        <p class="desc">Declarative grouping with SUM, AVERAGE, COUNT, MIN, MAX, or MEDIAN per column. Group values match exactly. Requires <code>headers: true</code>.</p>
         <pre>{
   <span class="key">"csv"</span><span class="punct">:</span> <span class="str">"Region,Revenue,Units\nEurope,1000,5\n..."</span>,
   <span class="key">"headers"</span><span class="punct">:</span> <span class="num">true</span>,
@@ -450,7 +457,7 @@
           <tr><td>Max formula length</td><td>2,000 chars</td></tr>
           <tr><td>Max formulas per request</td><td>100</td></tr>
           <tr><td>Max CSV cell size</td><td>10,000 chars</td></tr>
-          <tr><td>Evaluation timeout</td><td>5 seconds</td></tr>
+          <tr><td>Max distinct groups (groupBy)</td><td>10,000</td></tr>
           <tr><td>Rate limit</td><td>60 req/min per IP</td></tr>
         </tbody>
       </table>
@@ -493,19 +500,20 @@
     <!-- Performance -->
     <div class="section">
       <h2>Performance</h2>
-      <p>Benchmarked with a 50,000-row sales dataset (14 columns, 6 MB CSV) on Apple M4 Max / Node 22.</p>
+      <p>Measured against the hosted Worker with a 50,000-row sales dataset (14 columns, 4 MB CSV). Median of three requests, end to end from the client, including upload and server-side CSV parsing.</p>
       <table class="perf-table">
-        <thead><tr><th>Mode</th><th>Details</th><th>Avg Time</th></tr></thead>
+        <thead><tr><th>Mode</th><th>Details</th><th>Round trip</th></tr></thead>
         <tbody>
-          <tr><td>Formulas + named columns</td><td>7 formulas (SUM, AVERAGE, MAX, COUNTA)</td><td>~1,016 ms</td></tr>
-          <tr><td>Formulas + cell references</td><td>3 formulas, no headers</td><td>~560 ms</td></tr>
-          <tr><td>GroupBy (7 groups)</td><td>by Region, 3 aggregates</td><td>~1,707 ms</td></tr>
-          <tr><td>GroupBy (12 groups)</td><td>by Item Type, 4 aggregates</td><td>~2,838 ms</td></tr>
-          <tr><td>GroupBy (2 groups)</td><td>by Sales Channel, 3 aggregates</td><td>~1,127 ms</td></tr>
-          <tr><td>Small dataset</td><td>3 rows, 3 formulas</td><td>~7 ms</td></tr>
+          <tr><td>Formulas + named columns</td><td>7 formulas (SUM, AVERAGE, MAX, COUNTA)</td><td>~12.5 s</td></tr>
+          <tr><td>Formulas + cell references</td><td>3 formulas, no headers</td><td>~4.5 s</td></tr>
+          <tr><td>GroupBy (2 groups)</td><td>by Channel, 3 aggregates</td><td>~0.9 s</td></tr>
+          <tr><td>GroupBy (7 groups)</td><td>by Region, 3 aggregates</td><td>~1.3 s</td></tr>
+          <tr><td>GroupBy (12 groups)</td><td>by Item Type, 4 aggregates</td><td>~1.2 s</td></tr>
+          <tr><td>GroupBy (180 groups)</td><td>by Country, 3 aggregates</td><td>~1.0 s</td></tr>
+          <tr><td>Small dataset</td><td>3 rows, 3 formulas</td><td>~0.3 s</td></tr>
         </tbody>
       </table>
-      <p>Times are server-side <code>durationMs</code> (excludes network and CSV parsing overhead).</p>
+      <p>Formulas and grid modes build a HyperFormula engine per request, so cost grows with data size. GroupBy is a single pass over the rows and is largely independent of the number of groups.</p>
     </div>
 
     <hr class="divider">
@@ -529,6 +537,7 @@
   <div class="footer">
     Powered by <a href="https://hyperformula.handsontable.com/" target="_blank">HyperFormula</a>
     &middot; Built by <a href="https://handsontable.com/" target="_blank">Handsontable</a>
+    &middot; <a href="https://github.com/handsontable/hyperformula-mcp" target="_blank">Source on GitHub</a>
     <br>
     <span style="opacity:.7">This service runs as a serverless edge function. Your data is processed in memory and never stored. We collect anonymous usage analytics on submitted formulas and execution metadata.</span>
   </div>

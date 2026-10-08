@@ -10,9 +10,7 @@ Send data and Excel-compatible formulas to a single API endpoint and get compute
 **Repo**: https://github.com/handsontable/hyperformula-mcp
 
 > Hosted as a Cloudflare Worker on the Handsontable sandbox account. The API is
-> public (no authentication) so AI agents and HTTP clients can call it directly;
-> responses carry an `X-Robots-Tag: noindex` header to keep the endpoint out of
-> search results.
+> public (no authentication) so AI agents and HTTP clients can call it directly.
 
 Built on [HyperFormula](https://hyperformula.handsontable.com/), a headless spreadsheet calculation engine by [Handsontable](https://handsontable.com/).
 
@@ -182,7 +180,7 @@ is a no-op.
 | `data` | array[] | 2D JSON array. Mutually exclusive with `csv`. |
 | `headers` | boolean | When `true`, row 1 = column names usable in formulas. Required for `groupBy`. |
 | `formulas` | string[] | Array of formulas (each starting with `=`). Returns array of results. |
-| `groupBy` | object | `{by: "column", aggregates: {col: "SUM"}}`. Requires `headers: true`. Rows with a blank `by` value are skipped. |
+| `groupBy` | object | `{by: "column", aggregates: {col: "SUM"}}`. Requires `headers: true`. Rows with a blank `by` value are skipped. Group values match exactly (case-sensitive). |
 
 ### Limits
 
@@ -194,7 +192,7 @@ is a no-op.
 | Max formula length | 2,000 characters |
 | Max formulas per request | 100 |
 | Max cell size (CSV) | 10,000 characters |
-| Evaluation timeout | 5 seconds |
+| Max distinct groups (groupBy) | 10,000 |
 | Rate limit | 60 requests/minute per IP |
 
 ### Supported Formulas
@@ -219,7 +217,6 @@ is a no-op.
   "meta": {
     "rows": 50001,
     "cols": 14,
-    "durationMs": 1016,
     "groups": 7,
     "columns": {"Revenue": {"letter": "B", "index": 1, "namedExpression": "Revenue"}}
   }
@@ -267,34 +264,37 @@ The API is designed to be easily discovered and used by AI agents:
 - **Stateless**: No database, no sessions. Each request is independent.
 - **Edge-deployable**: Runs as a Cloudflare Worker (static assets + API in one Worker). Deploy anywhere that supports Node-compatible serverless.
 - **Rate limited**: 60 req/min per IP with sliding window. Headers expose remaining quota.
-- **Hardened**: requests whose evaluation exceeds 5s are rejected (backed by the Workers CPU cap), formula length/count limits, CSV cell size caps, sanitized error messages.
-- **Observable**: PostHog analytics capture submitted formulas, execution modes, row counts, and durations. Dataset contents are processed in memory and never stored.
+- **Hardened**: row/column/body/formula limits, CSV cell size caps, sanitized error messages. Requests that exceed the Workers CPU limit fail at the platform level.
+- **Observable**: PostHog analytics capture submitted formulas, execution modes, and row counts. Dataset contents are processed in memory and never stored.
 
 ---
 
 ## Performance
 
-Benchmarked with a 50,000-row sales dataset (14 columns, 6MB CSV) on Apple M4 Max / Node 22.
+Measured against the hosted Worker with a 50,000-row sales dataset (14 columns, 4 MB CSV). Each figure is the median of three requests, measured end to end from the client, so it includes uploading the CSV and parsing it server-side.
 
-| Mode | Details | Avg Time |
-|------|---------|----------|
-| Formulas + named columns | 7 formulas (SUM, AVERAGE, MAX, COUNTA) | ~1,016ms |
-| Formulas + cell references | 3 formulas, no headers | ~560ms |
-| GroupBy (7 groups) | by Region, 3 aggregates (SUM) | ~1,707ms |
-| GroupBy (12 groups) | by Item Type, 4 aggregates (SUM, AVERAGE) | ~2,838ms |
-| GroupBy (2 groups) | by Sales Channel, 3 aggregates (SUM) | ~1,127ms |
-| Small dataset baseline | 3 rows, 3 formulas | ~7ms |
+| Mode | Details | Round trip |
+|------|---------|------------|
+| Formulas + named columns | 7 formulas (SUM, AVERAGE, MAX, COUNTA) | ~12.5 s |
+| Formulas + cell references | 3 formulas, no headers | ~4.5 s |
+| GroupBy (2 groups) | by Channel, 3 aggregates (SUM) | ~0.9 s |
+| GroupBy (7 groups) | by Region, 3 aggregates (SUM) | ~1.3 s |
+| GroupBy (12 groups) | by Item Type, 4 aggregates (SUM, AVERAGE) | ~1.2 s |
+| GroupBy (180 groups) | by Country, 3 aggregates (SUM, AVERAGE, MEDIAN) | ~1.0 s |
+| Small dataset baseline | 3 rows, 3 formulas | ~0.3 s |
 
-Times are server-side `durationMs` (excludes network and CSV parsing overhead).
+Formulas and grid modes build a full HyperFormula engine instance per request, so their cost grows with the data size and the formulas used. GroupBy runs as a single pass over the rows and is largely independent of the number of groups. The Worker cannot measure its own CPU time (the platform freezes the clock during a request), so the response carries no timing field.
 
 ---
 
 ## Privacy
 
-This service runs as a serverless edge function. Your data is processed in-memory and never stored. We collect anonymous usage analytics: the formulas submitted, execution modes, row counts, and durations.
+This service runs as a serverless edge function. Your data is processed in-memory and never stored. We collect anonymous usage analytics: the formulas submitted, execution modes, and row counts.
 
 ---
 
 ## License
 
-Powered by [HyperFormula](https://hyperformula.handsontable.com/) (GPLv3). Built by [Handsontable](https://handsontable.com/).
+This repository is released under the [MIT License](LICENSE). Built by [Handsontable](https://handsontable.com/).
+
+It depends on [HyperFormula](https://hyperformula.handsontable.com/), which is dual-licensed under GPLv3 and a commercial license. The hosted service and this repo use the `gpl-v3` license key; if you self-host, make sure your use complies with the GPLv3 terms or [obtain a commercial HyperFormula license](https://hyperformula.handsontable.com/guide/license-key.html).

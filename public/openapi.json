@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "HyperFormula Edge Calc Service",
-    "version": "0.5.0",
+    "version": "0.6.0",
     "description": "Stateless spreadsheet calculation API. Send data (JSON arrays or CSV strings) and formulas via HTTP, get computed results. Supports 400+ Excel-compatible functions, named columns via headers, and declarative groupBy aggregation. Ideal for AI agents."
   },
   "servers": [
@@ -24,7 +24,7 @@
       "post": {
         "operationId": "evaluate",
         "summary": "Evaluate spreadsheet formulas against data",
-        "description": "Send data (as 2D JSON array or CSV string) with formulas. Supports named columns (headers:true) and declarative groupBy aggregation. Five modes: single formula, multi formulas, embedded formulas, groupBy.",
+        "description": "Send data (as 2D JSON array or CSV string) with formulas. Supports named columns (headers:true) and declarative groupBy aggregation. Three modes: formulas, embedded grid, groupBy.",
         "requestBody": {
           "required": true,
           "content": {
@@ -106,7 +106,7 @@
           },
           "groupBy": {
             "type": "object",
-            "description": "Declarative aggregation. Requires headers:true. Mutually exclusive with formulas.",
+            "description": "Declarative aggregation. Requires headers:true. Mutually exclusive with formulas. Group values match exactly (case-sensitive); up to 10,000 distinct groups.",
             "properties": {
               "by": { "type": "string", "description": "Column name to group by." },
               "aggregates": {
@@ -116,7 +116,7 @@
               }
             },
             "required": ["by", "aggregates"]
-          },
+          }
         }
       },
       "CalcResponse": {
@@ -131,7 +131,6 @@
               "rows": { "type": "integer" },
               "cols": { "type": "integer" },
               "groups": { "type": "integer", "description": "Number of groups (groupBy mode only)" },
-              "durationMs": { "type": "integer" },
               "columns": { "type": "object", "description": "Column name mapping (when headers:true)" }
             }
           }

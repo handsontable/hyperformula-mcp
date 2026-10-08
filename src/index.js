@@ -30,7 +30,6 @@ function trackEval(env, ctx, clientIp, body, result, transport = "http") {
     headers: !!body.headers,
     rows: result.meta?.rows,
     cols: result.meta?.cols,
-    durationMs: result.meta?.durationMs,
   };
 
   if (result.mode === "formulas") {
@@ -58,13 +57,13 @@ const MAX_BODY_BYTES = 50_000_000; // 50 MB
 const MAX_FORMULA_LENGTH = 2_000;
 const MAX_FORMULAS = 100;
 const MAX_CELL_CHARS = 10_000;
-const EVAL_TIMEOUT_MS = 5_000;
+const MAX_GROUPS = 10_000;
 const RATE_LIMIT = 60; // requests per window
 const RATE_WINDOW_MS = 60_000; // 1 minute
 
 // --- Rate limiter (in-memory sliding window) ---
-// Per-isolate and ephemeral, same practical scope as the previous per-instance
-// Netlify function. Good enough for basic abuse protection; not a global limit.
+// Per-isolate and ephemeral. Good enough for basic abuse protection; not a
+// global limit.
 const ipHits = new Map();
 const RATE_MAP_SWEEP_SIZE = 10_000;
 
@@ -218,172 +217,144 @@ function sanitizeName(name) {
   return s;
 }
 
+// Map header names (original and sanitized) to column letters and indexes.
+function buildColumnMap(headerRow) {
+  const columnMap = {};
+  for (let c = 0; c < headerRow.length; c++) {
+    const raw = headerRow[c];
+    if (raw == null) continue;
+    const colName = String(raw);
+    const safeName = sanitizeName(colName);
+    const entry = { letter: colToLetter(c), index: c, namedExpression: safeName };
+    columnMap[colName] = entry;
+    if (safeName !== colName) columnMap[safeName] = entry;
+  }
+  return columnMap;
+}
+
 export function evaluate({ data, formulas, headers, groupBy }) {
   const name = "Sheet1";
   const normalized = normalizeData(data);
-  const startMs = Date.now();
-
-  const hf = HyperFormula.buildFromSheets(
-    { [name]: normalized },
-    { licenseKey: "gpl-v3", maxRows: MAX_ROWS + 1001, maxColumns: MAX_COLS + 100 }
-  );
-
-  const sheetId = hf.getSheetId(hf.getSheetName(0));
-
-  // Named expressions from headers
-  let columnMap = null;
-  if (headers && normalized.length > 0) {
-    const headerRow = normalized[0];
-    columnMap = {};
-    const dataRows = normalized.length;
-    for (let c = 0; c < headerRow.length; c++) {
-      const raw = headerRow[c];
-      if (raw == null) continue;
-      const colName = String(raw);
-      const safeName = sanitizeName(colName);
-      const col = colToLetter(c);
-      const expr = `=${name}!$${col}$2:$${col}$${dataRows}`;
-      try {
-        hf.addNamedExpression(safeName, expr);
-      } catch (_) { /* skip if name conflicts with built-in */ }
-      const entry = { letter: col, index: c, namedExpression: safeName };
-      columnMap[colName] = entry;
-      if (safeName !== colName) columnMap[safeName] = entry;
-    }
-  }
+  const columnMap = headers && normalized.length > 0 ? buildColumnMap(normalized[0]) : null;
 
   let mode, result;
 
   if (groupBy) {
-    // GroupBy mode
-    result = evaluateGroupBy(hf, sheetId, normalized, columnMap, groupBy, name);
+    // GroupBy mode — a single pass over the data; no engine instance needed
+    result = evaluateGroupBy(normalized, columnMap, groupBy);
     mode = "groupBy";
-  } else if (Array.isArray(formulas) && formulas.length > 0) {
-    // Formulas mode — always returns an array
-    const formulaRow = normalized.length;
-    for (let i = 0; i < formulas.length; i++) {
-      hf.setCellContents({ sheet: sheetId, row: formulaRow, col: i }, [[formulas[i]]]);
-    }
-    const results = [];
-    for (let i = 0; i < formulas.length; i++) {
-      results.push(unwrapValue(hf.getCellValue({ sheet: sheetId, row: formulaRow, col: i })));
-    }
-    mode = "formulas";
-    result = results;
   } else {
-    // Embedded formula mode — return the full evaluated grid
-    mode = "grid";
-    result = extractGrid(hf, sheetId, normalized.length, normalized[0]?.length || 0);
+    const hf = HyperFormula.buildFromSheets(
+      { [name]: normalized },
+      { licenseKey: "gpl-v3", maxRows: MAX_ROWS + 1001, maxColumns: MAX_COLS + 100 }
+    );
+    const sheetId = hf.getSheetId(hf.getSheetName(0));
+
+    // Named expressions from headers: each column name refers to its data range
+    if (columnMap) {
+      const dataRows = normalized.length;
+      for (const entry of new Set(Object.values(columnMap))) {
+        const col = entry.letter;
+        try {
+          hf.addNamedExpression(entry.namedExpression, `=${name}!$${col}$2:$${col}$${dataRows}`);
+        } catch (_) { /* skip if name conflicts with built-in */ }
+      }
+    }
+
+    if (Array.isArray(formulas) && formulas.length > 0) {
+      // Formulas mode — all formulas set in one operation, results in the same order
+      const formulaRow = normalized.length;
+      hf.setCellContents({ sheet: sheetId, row: formulaRow, col: 0 }, [formulas]);
+      result = formulas.map((_, i) => unwrapValue(hf.getCellValue({ sheet: sheetId, row: formulaRow, col: i })));
+      mode = "formulas";
+    } else {
+      // Embedded formula mode — return the full evaluated grid
+      mode = "grid";
+      result = extractGrid(hf, sheetId, normalized.length, normalized[0]?.length || 0);
+    }
+    hf.destroy();
   }
 
-  const durationMs = Date.now() - startMs;
-  hf.destroy();
-
-  const meta = { rows: normalized.length, cols: normalized[0]?.length || 0, durationMs };
+  const meta = { rows: normalized.length, cols: normalized[0]?.length || 0 };
   if (columnMap) meta.columns = columnMap;
   if (mode === "groupBy") meta.groups = result.length;
 
   return { success: true, mode, result, meta };
 }
 
-function evaluateGroupBy(hf, sheetId, normalized, columnMap, groupBy, sheetName) {
+const SUPPORTED_AGGS = ["SUM", "AVERAGE", "COUNT", "MIN", "MAX", "MEDIAN"];
+
+// GroupBy is computed in a single pass over the rows rather than as one
+// SUMIF-style formula per group x aggregate: that layout scanned every row
+// once per formula and hit the engine's sheet-size cap past ~150 cells, so
+// grouping by a high-cardinality column failed. Group keys match exactly
+// (case-sensitive, no wildcard interpretation). Results follow spreadsheet
+// semantics: non-numeric values are ignored by SUM/AVERAGE/MIN/MAX/MEDIAN,
+// COUNT counts the rows in the group, AVERAGE of no numbers is #DIV/0!,
+// MIN/MAX of no numbers is 0.
+function evaluateGroupBy(normalized, columnMap, groupBy) {
   const { by, aggregates } = groupBy;
   const byInfo = columnMap[by];
   if (!byInfo) throw { type: "INVALID_GROUPBY", message: `Column '${by}' not found in headers` };
 
-  const byColIdx = byInfo.index;
-  const byCol = byInfo.letter;
-  const dataRows = normalized.length;
-
-  // Get unique group values from data (skip header row 0)
-  const seen = new Set();
-  const groups = [];
-  for (let r = 1; r < normalized.length; r++) {
-    const val = normalized[r][byColIdx];
-    if (val == null) continue; // blank group values are skipped (no reliable SUMIF criterion for blanks)
-    const key = String(val);
-    if (!seen.has(key)) {
-      seen.add(key);
-      groups.push({ key, raw: val });
-    }
-  }
-
-  const aggEntries = Object.entries(aggregates);
-  const SUPPORTED_AGGS = { SUM: 1, AVERAGE: 1, COUNT: 1, MIN: 1, MAX: 1, MEDIAN: 1 };
-
-  // Validate aggregate columns and functions
-  for (const [col, fn] of aggEntries) {
+  const aggEntries = Object.entries(aggregates).map(([col, fn]) => {
     if (!columnMap[col]) throw { type: "INVALID_GROUPBY", message: `Aggregate column '${col}' not found in headers` };
     const upperFn = String(fn).toUpperCase();
-    if (!SUPPORTED_AGGS[upperFn]) throw { type: "INVALID_GROUPBY", message: `Unsupported aggregate '${fn}'. Use: ${Object.keys(SUPPORTED_AGGS).join(", ")}` };
-  }
+    if (!SUPPORTED_AGGS.includes(upperFn)) throw { type: "INVALID_GROUPBY", message: `Unsupported aggregate '${fn}'. Use: ${SUPPORTED_AGGS.join(", ")}` };
+    return { key: col, index: columnMap[col].index, fn: upperFn };
+  });
 
-  // Build formulas for each group × aggregate
-  const formulaRow = normalized.length;
-  let col = 0;
-  const formulaMap = []; // { groupIdx, aggKey, col }
-
-  // Range strings for the by-column (1-indexed, skip header)
-  const byRange = `${sheetName}!${byCol}2:${byCol}${dataRows}`;
-
-  for (let gi = 0; gi < groups.length; gi++) {
-    const groupVal = groups[gi].raw;
-    const criterion = typeof groupVal === "string" ? `"${groupVal.replace(/"/g, '""')}"` : String(groupVal);
-
-    for (const [aggCol, aggFn] of aggEntries) {
-      const aggInfo = columnMap[aggCol];
-      const aggRange = `${sheetName}!${aggInfo.letter}2:${aggInfo.letter}${dataRows}`;
-      const upperFn = String(aggFn).toUpperCase();
-
-      let formula;
-      if (upperFn === "SUM") {
-        formula = `=SUMIF(${byRange},${criterion},${aggRange})`;
-      } else if (upperFn === "AVERAGE") {
-        formula = `=AVERAGEIF(${byRange},${criterion},${aggRange})`;
-      } else if (upperFn === "COUNT") {
-        formula = `=COUNTIF(${byRange},${criterion})`;
-      } else if (upperFn === "MIN") {
-        formula = `=MINIFS(${aggRange},${byRange},${criterion})`;
-      } else if (upperFn === "MAX") {
-        formula = `=MAXIFS(${aggRange},${byRange},${criterion})`;
-      } else if (upperFn === "MEDIAN") {
-        // No MEDIANIF in HyperFormula — compute manually below
-        formulaMap.push({ groupIdx: gi, aggKey: aggCol, col, median: true });
-        col++;
-        continue;
+  // One accumulator per group, in first-seen order (header row 0 is skipped;
+  // rows with a blank group value are skipped)
+  const groups = new Map();
+  for (let r = 1; r < normalized.length; r++) {
+    const val = normalized[r][byInfo.index];
+    if (val == null) continue;
+    const key = String(val);
+    let acc = groups.get(key);
+    if (!acc) {
+      if (groups.size >= MAX_GROUPS) {
+        throw { type: "INVALID_GROUPBY", message: `groupBy produced more than ${MAX_GROUPS} distinct '${by}' values` };
       }
-
-      hf.setCellContents({ sheet: sheetId, row: formulaRow, col }, [[formula]]);
-      formulaMap.push({ groupIdx: gi, aggKey: aggCol, col, median: false });
-      col++;
+      acc = { raw: val, count: 0, cols: aggEntries.map(() => ({ sum: 0, n: 0, min: Infinity, max: -Infinity, values: null })) };
+      groups.set(key, acc);
+    }
+    acc.count++;
+    for (let i = 0; i < aggEntries.length; i++) {
+      const v = normalized[r][aggEntries[i].index];
+      if (typeof v !== "number") continue;
+      const c = acc.cols[i];
+      c.sum += v;
+      c.n++;
+      if (v < c.min) c.min = v;
+      if (v > c.max) c.max = v;
+      if (aggEntries[i].fn === "MEDIAN") (c.values ??= []).push(v);
     }
   }
 
-  // Read formula results
-  const results = groups.map(g => ({ group: g.raw }));
-  for (const fm of formulaMap) {
-    if (fm.median) {
-      // Compute median manually for this group
-      const byIdx = byColIdx;
-      const aggIdx = columnMap[fm.aggKey].index;
-      const groupVal = groups[fm.groupIdx].raw;
-      const vals = [];
-      for (let r = 1; r < normalized.length; r++) {
-        if (normalized[r][byIdx] === groupVal || String(normalized[r][byIdx]) === String(groupVal)) {
-          const v = normalized[r][aggIdx];
-          if (typeof v === "number") vals.push(v);
+  const results = [];
+  for (const acc of groups.values()) {
+    const row = { group: acc.raw };
+    for (let i = 0; i < aggEntries.length; i++) {
+      const { key, fn } = aggEntries[i];
+      const c = acc.cols[i];
+      switch (fn) {
+        case "SUM": row[key] = c.sum; break;
+        case "AVERAGE": row[key] = c.n === 0 ? { error: "#DIV/0!" } : c.sum / c.n; break;
+        case "COUNT": row[key] = acc.count; break;
+        case "MIN": row[key] = c.n === 0 ? 0 : c.min; break;
+        case "MAX": row[key] = c.n === 0 ? 0 : c.max; break;
+        case "MEDIAN": {
+          if (c.n === 0) { row[key] = null; break; }
+          const vals = c.values.sort((a, b) => a - b);
+          const mid = Math.floor(vals.length / 2);
+          row[key] = vals.length % 2 === 0 ? (vals[mid - 1] + vals[mid]) / 2 : vals[mid];
+          break;
         }
       }
-      vals.sort((a, b) => a - b);
-      const mid = Math.floor(vals.length / 2);
-      results[fm.groupIdx][fm.aggKey] = vals.length === 0 ? null :
-        vals.length % 2 === 0 ? (vals[mid - 1] + vals[mid]) / 2 : vals[mid];
-    } else {
-      const raw = hf.getCellValue({ sheet: sheetId, row: formulaRow, col: fm.col });
-      results[fm.groupIdx][fm.aggKey] = unwrapValue(raw);
     }
+    results.push(row);
   }
-
   return results;
 }
 
@@ -413,13 +384,13 @@ function unwrapValue(v) {
 
 const API_SCHEMA = {
   name: "HyperFormula Edge Calc Service",
-  version: "0.5.0",
+  version: "0.6.0",
   description: "Stateless spreadsheet calculation API. Send data (JSON or CSV) and formulas, get computed results. Supports 400+ Excel-compatible functions, named columns, and declarative groupBy aggregation.",
   endpoint: "/api/calc",
   method: "POST",
   contentType: "application/json",
   rateLimit: { requests: RATE_LIMIT, windowSeconds: RATE_WINDOW_MS / 1000 },
-  limits: { maxRows: MAX_ROWS, maxCols: MAX_COLS, maxBodyBytes: MAX_BODY_BYTES, maxFormulaLength: MAX_FORMULA_LENGTH, maxFormulas: MAX_FORMULAS, maxCellChars: MAX_CELL_CHARS, evalTimeoutSeconds: EVAL_TIMEOUT_MS / 1000 },
+  limits: { maxRows: MAX_ROWS, maxCols: MAX_COLS, maxBodyBytes: MAX_BODY_BYTES, maxFormulaLength: MAX_FORMULA_LENGTH, maxFormulas: MAX_FORMULAS, maxCellChars: MAX_CELL_CHARS, maxGroups: MAX_GROUPS },
   parameters: {
     data: {
       type: "array of arrays",
@@ -446,7 +417,7 @@ const API_SCHEMA = {
     groupBy: {
       type: "object",
       required: false,
-      description: "Declarative aggregation. Groups data by a column and computes aggregates per group. Requires headers:true. Mutually exclusive with formulas. Returns array of {group, ...aggregates} objects. Rows with a blank value in the 'by' column are skipped.",
+      description: "Declarative aggregation. Groups data by a column and computes aggregates per group. Requires headers:true. Mutually exclusive with formulas. Returns array of {group, ...aggregates} objects. Rows with a blank value in the 'by' column are skipped. Group values match exactly (case-sensitive). Up to 10,000 distinct groups.",
       properties: {
         by: { type: "string", description: "Column name to group by" },
         aggregates: { type: "object", description: "Map of column name → aggregate function. Supported: SUM, AVERAGE, COUNT, MIN, MAX, MEDIAN" },
@@ -483,17 +454,6 @@ const API_SCHEMA = {
     formulaDocs: "https://hyperformula.handsontable.com/guide/built-in-functions.html",
   },
 };
-
-// --- Timeout wrapper ---
-
-function evalWithTimeout(args) {
-  const start = Date.now();
-  const result = evaluate(args);
-  if (Date.now() - start > EVAL_TIMEOUT_MS) {
-    throw { type: "EVALUATION_TIMEOUT" };
-  }
-  return result;
-}
 
 // --- Shared request-body processing (used by the HTTP API and the MCP endpoint) ---
 
@@ -561,11 +521,8 @@ function processCalcBody(body) {
   }
 
   try {
-    return { ok: true, result: evalWithTimeout({ data, formulas, headers, groupBy }) };
+    return { ok: true, result: evaluate({ data, formulas, headers, groupBy }) };
   } catch (err) {
-    if (err.type === "EVALUATION_TIMEOUT") {
-      return invalid(408, "EVALUATION_TIMEOUT", `Evaluation exceeded ${EVAL_TIMEOUT_MS / 1000}s limit`);
-    }
     const safeType = err.type || "EVALUATION_ERROR";
     const safeMessage = err.type ? (err.message || "Evaluation failed") : "Evaluation failed";
     return invalid(422, safeType, safeMessage);
@@ -579,7 +536,6 @@ async function handleCalc(request, env, ctx) {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
-    "X-Robots-Tag": "noindex",
   };
 
   // CORS preflight
@@ -631,8 +587,8 @@ async function handleCalc(request, env, ctx) {
   }
 
   // Body size check — reject up front on Content-Length, before reading the
-  // body into memory (a Worker has no platform body cap like Netlify did, so
-  // an oversized payload would otherwise exhaust the isolate before the 413).
+  // body into memory (a Worker has no platform body cap, so an oversized
+  // payload would otherwise exhaust the isolate before the 413).
   const contentLength = Number(request.headers.get("content-length"));
   if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
     return fail(413, "PAYLOAD_TOO_LARGE", `Body exceeds ${MAX_BODY_BYTES} bytes`);
@@ -654,7 +610,7 @@ async function handleCalc(request, env, ctx) {
 
   const outcome = processCalcBody(body);
   if (!outcome.ok) {
-    if (outcome.status >= 408) trackError(env, ctx, clientIp, outcome.type);
+    if (outcome.status === 422) trackError(env, ctx, clientIp, outcome.type);
     return fail(outcome.status, outcome.type, outcome.message);
   }
   trackEval(env, ctx, clientIp, body, outcome.result);
@@ -669,7 +625,7 @@ async function handleCalc(request, env, ctx) {
 // exactly what this service is). Clients connect with just the URL.
 
 const MCP_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
-const MCP_SERVER_INFO = { name: "hyperformula-calc", version: "0.5.0" };
+const MCP_SERVER_INFO = { name: "hyperformula-calc", version: "0.6.0" };
 
 const MCP_DATA_PARAMS = {
   csv: { type: "string", description: "Raw CSV string. Numeric values auto-detected. Use this OR data, not both." },
@@ -742,7 +698,7 @@ function mcpToolBody(name, args) {
 
 function formatMcpResult(name, args, json) {
   if (name === "calc_formulas") {
-    const lines = [`Results (${json.meta.durationMs}ms, ${json.meta.rows} rows):`];
+    const lines = [`Results (${json.meta.rows} rows):`];
     for (let i = 0; i < args.formulas.length; i++) {
       lines.push(`  ${args.formulas[i]} = ${displayValue(json.result[i])}`);
     }
@@ -750,14 +706,14 @@ function formatMcpResult(name, args, json) {
   }
   if (name === "calc_groupby") {
     const aggCols = Object.keys(args.aggregates);
-    const lines = [`GroupBy '${args.by}' (${json.meta.groups} groups, ${json.meta.durationMs}ms):`, ""];
+    const lines = [`GroupBy '${args.by}' (${json.meta.groups} groups):`, ""];
     lines.push(["group", ...aggCols].join("\t"));
     for (const r of json.result) {
       lines.push([displayValue(r.group), ...aggCols.map((c) => displayValue(r[c]))].join("\t"));
     }
     return lines.join("\n");
   }
-  const lines = [`Evaluated grid (${json.meta.rows}x${json.meta.cols}, ${json.meta.durationMs}ms):`, ""];
+  const lines = [`Evaluated grid (${json.meta.rows}x${json.meta.cols}):`, ""];
   for (const row of json.result) {
     lines.push(row.map(displayValue).join("\t"));
   }
@@ -798,7 +754,7 @@ function handleMcpMessage(msg, env, ctx, clientIp) {
         const body = mcpToolBody(name, args);
         const outcome = processCalcBody(body);
         if (!outcome.ok) {
-          if (outcome.status >= 408) trackError(env, ctx, clientIp, outcome.type);
+          if (outcome.status === 422) trackError(env, ctx, clientIp, outcome.type);
           return toolError(`Error (${outcome.type}): ${outcome.message}`);
         }
         trackEval(env, ctx, clientIp, body, outcome.result, "mcp");
@@ -817,7 +773,6 @@ async function handleMcp(request, env, ctx) {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Accept, Authorization, Mcp-Session-Id, MCP-Protocol-Version",
-    "X-Robots-Tag": "noindex",
   };
 
   if (request.method === "OPTIONS") {
@@ -884,7 +839,7 @@ export default {
       return handleMcp(request, env, ctx);
     }
 
-    // Everything else is a static asset from ./public (noindex via public/_headers).
+    // Everything else is a static asset from ./public.
     return env.ASSETS.fetch(request);
   },
 };

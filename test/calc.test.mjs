@@ -39,11 +39,10 @@ describe("formulas mode", () => {
     assert.ok(out.result[0] && typeof out.result[0] === "object" && out.result[0].error);
   });
 
-  it("includes meta with rows, cols, durationMs", () => {
+  it("includes meta with rows and cols", () => {
     const out = evaluate({ data: [["a"], [1]], formulas: ["=A2+1"] });
     assert.equal(out.meta.rows, 2);
     assert.equal(out.meta.cols, 1);
-    assert.equal(typeof out.meta.durationMs, "number");
   });
 });
 
@@ -85,6 +84,37 @@ describe("groupBy mode", () => {
     const y = out.result.find(r => r.group === "y");
     assert.equal(x.v, 3);
     assert.equal(y.v, 15);
+  });
+
+  it("matches group values exactly (wildcards literal, case-sensitive)", () => {
+    const data = parseCSV("g,v\nA*,1\nAB,2\nA*,3\na?,4\nab,5");
+    const out = evaluate({ data, headers: true, groupBy: { by: "g", aggregates: { v: "SUM" } } });
+    assert.deepEqual(out.result, [{ group: "A*", v: 4 }, { group: "AB", v: 2 }, { group: "a?", v: 4 }, { group: "ab", v: 5 }]);
+  });
+
+  it("computes COUNT, MIN, MAX and ignores non-numeric cells", () => {
+    const data = parseCSV("g,v\nx,5\nx,n/a\nx,2\ny,");
+    const out = evaluate({ data, headers: true, groupBy: { by: "g", aggregates: { v: "COUNT" } } });
+    assert.deepEqual(out.result, [{ group: "x", v: 3 }, { group: "y", v: 1 }]);
+    const out2 = evaluate({ data, headers: true, groupBy: { by: "g", aggregates: { v: "MIN" } } });
+    assert.equal(out2.result[0].v, 2);
+    const out3 = evaluate({ data, headers: true, groupBy: { by: "g", aggregates: { v: "AVERAGE" } } });
+    assert.equal(out3.result[0].v, 3.5);
+    assert.deepEqual(out3.result[1].v, { error: "#DIV/0!" });
+  });
+
+  it("handles thousands of distinct groups", () => {
+    const data = [["g", "v"]];
+    for (let i = 0; i < 5000; i++) data.push(["G" + i, i]);
+    const out = evaluate({ data, headers: true, groupBy: { by: "g", aggregates: { v: "SUM" } } });
+    assert.equal(out.meta.groups, 5000);
+    assert.equal(out.result[4999].v, 4999);
+  });
+
+  it("rejects more than the maximum number of groups with a clear error", () => {
+    const data = [["g", "v"]];
+    for (let i = 0; i < 10001; i++) data.push(["G" + i, i]);
+    assert.throws(() => evaluate({ data, headers: true, groupBy: { by: "g", aggregates: { v: "SUM" } } }), (e) => e.type === "INVALID_GROUPBY" && /10000/.test(e.message));
   });
 
   it("throws for an unknown groupBy column", () => {
@@ -138,14 +168,13 @@ describe("worker fetch handler", () => {
     assert.equal(json.error.type, "PAYLOAD_TOO_LARGE");
   });
 
-  it("evaluates a POST with results and noindex header", async () => {
+  it("evaluates a POST with results", async () => {
     const res = await worker.fetch(
       req("/api/calc", { body: JSON.stringify({ data: [[1, 2], [3, 4]], formulas: ["=SUM(A1:B2)"] }) }),
       {},
       CTX
     );
     assert.equal(res.status, 200);
-    assert.equal(res.headers.get("x-robots-tag"), "noindex");
     const json = await res.json();
     assert.deepEqual(json.result, [10]);
   });

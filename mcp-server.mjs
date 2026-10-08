@@ -109,6 +109,12 @@ async function callApi(body) {
 
 // --- Tool handlers ---
 
+function displayValue(v) {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "object" && v.error) return `ERROR: ${v.error}`;
+  return String(v);
+}
+
 async function handleCalcFormulas(args) {
   const body = { formulas: args.formulas };
 
@@ -127,11 +133,9 @@ async function handleCalcFormulas(args) {
 
   const json = await callApi(body);
 
-  const lines = [`Results (${json.meta.durationMs}ms, ${json.meta.rows} rows):`];
+  const lines = [`Results (${json.meta.rows} rows):`];
   for (let i = 0; i < args.formulas.length; i++) {
-    const val = json.result[i];
-    const display = val && typeof val === "object" && val.error ? `ERROR: ${val.error}` : val;
-    lines.push(`  ${args.formulas[i]} = ${display}`);
+    lines.push(`  ${args.formulas[i]} = ${displayValue(json.result[i])}`);
   }
   if (json.meta.columns) {
     // columnMap lists each column under its original name first, then (if
@@ -176,7 +180,7 @@ async function handleCalcGroupby(args) {
   const header = ["group", ...aggCols];
   const rows = json.result.map((r) => [r.group, ...aggCols.map((c) => r[c])]);
 
-  const lines = [`GroupBy '${args.by}' (${json.meta.groups} groups, ${json.meta.durationMs}ms):`, ""];
+  const lines = [`GroupBy '${args.by}' (${json.meta.groups} groups):`, ""];
   lines.push(header.join("\t"));
   lines.push(header.map(() => "---").join("\t"));
   for (const row of rows) {
@@ -204,9 +208,9 @@ async function handleCalcGrid(args) {
 
   const json = await callApi(body);
 
-  const lines = [`Evaluated grid (${json.meta.rows}x${json.meta.cols}, ${json.meta.durationMs}ms):`, ""];
+  const lines = [`Evaluated grid (${json.meta.rows}x${json.meta.cols}):`, ""];
   for (const row of json.result) {
-    lines.push(row.map((v) => (v === null ? "" : String(v))).join("\t"));
+    lines.push(row.map(displayValue).join("\t"));
   }
 
   if (args.output_file) {
@@ -220,7 +224,7 @@ async function handleCalcGrid(args) {
 // --- MCP server ---
 
 const server = new Server(
-  { name: "hyperformula-calc", version: "0.5.0" },
+  { name: "hyperformula-calc", version: "0.6.0" },
   { capabilities: { tools: {} } }
 );
 
