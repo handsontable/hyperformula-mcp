@@ -4,10 +4,9 @@ Stateless spreadsheet calculations via HTTP. Formulas instead of code.
 
 Send data and Excel-compatible formulas to a single API endpoint and get computed results back as JSON. Accepts raw CSV or JSON arrays. Supports named columns, declarative groupBy aggregation, and 400+ built-in functions. Up to 50,000 rows per request.
 
-**Live API**: https://hyperformula-mcp.handsontable-sandbox.workers.dev
-**API Schema**: https://hyperformula-mcp.handsontable-sandbox.workers.dev/api/calc (GET)
-**Remote MCP**: https://hyperformula-mcp.handsontable-sandbox.workers.dev/mcp
-**Repo**: https://github.com/handsontable/hyperformula-mcp
+- **Live API**: https://hyperformula-mcp.handsontable-sandbox.workers.dev
+- **API Schema**: https://hyperformula-mcp.handsontable-sandbox.workers.dev/api/calc (GET)
+- **Remote MCP**: https://hyperformula-mcp.handsontable-sandbox.workers.dev/mcp
 
 > Hosted as a Cloudflare Worker on the Handsontable sandbox account. The API is
 > public (no authentication) so AI agents and HTTP clients can call it directly.
