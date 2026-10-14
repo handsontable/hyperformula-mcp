@@ -162,7 +162,8 @@ npm run deploy     # runs `wrangler deploy`
 ```
 
 Deploying requires a Cloudflare account (`npx wrangler login` on the CLI). The
-target Worker name and account are set in `wrangler.jsonc`.
+Worker name is set in `wrangler.jsonc`; the deploy goes to the account you are
+logged into (or set `CLOUDFLARE_ACCOUNT_ID` / `account_id` to pick one).
 
 For analytics, set a `POSTHOG_API_KEY` Worker secret with your PostHog project
 API key (`npx wrangler secret put POSTHOG_API_KEY`). When it's unset, analytics
