@@ -296,7 +296,7 @@ We collect anonymous usage analytics so we can see how the service is used, not 
 
 - a hash of the caller's IP that rotates daily (so we can count daily callers without a persistent identifier)
 - the transport (HTTP or MCP), the first token of the User-Agent, and for MCP the client's self-declared name and version
-- the mode, input type, row-count bucket (e.g. "1k-10k"), column count, formula count, and the **names of the spreadsheet functions** used (e.g. `SUM`, `COUNTIF`)
+- the mode, input type, whether named columns (`headers`) were enabled, row-count bucket (e.g. "1k-10k"), column count, formula count, and the **names of the spreadsheet functions** used (e.g. `SUM`, `COUNTIF`)
 - for groupBy, the aggregate functions used and a group-count bucket
 - error types for failed evaluations
 
