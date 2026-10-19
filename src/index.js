@@ -107,6 +107,19 @@ const MAX_FORMULA_LENGTH = 2_000;
 const MAX_FORMULAS = 100;
 const MAX_CELL_CHARS = 10_000;
 const MAX_GROUPS = 10_000;
+
+// Engine configuration shared by every request. Array arithmetic and ISO date
+// parsing are on so Excel-style formulas such as SUMPRODUCT((A2:A9="EU")*B2:B9)
+// and dates like 2024-01-31 behave as agents expect; the named expressions TRUE
+// and FALSE make the bare constants (VLOOKUP(x,range,2,FALSE)) resolve.
+const ENGINE_CONFIG = {
+  licenseKey: "gpl-v3",
+  maxRows: MAX_ROWS + 1001,
+  maxColumns: MAX_COLS + 100,
+  useArrayArithmetic: true,
+  dateFormats: ["YYYY-MM-DD", "DD/MM/YYYY", "DD/MM/YY"],
+};
+const CONSTANT_NAMED_EXPRESSIONS = { TRUE: "=TRUE()", FALSE: "=FALSE()" };
 const RATE_LIMIT = 60; // requests per window
 const RATE_WINDOW_MS = 60_000; // 1 minute
 
@@ -163,6 +176,11 @@ function validateData(data) {
   for (let i = 0; i < data.length; i++) {
     if (!Array.isArray(data[i])) {
       return `data[${i}] is not an array`;
+    }
+    for (const v of data[i]) {
+      if (typeof v === "string" && v.length > MAX_CELL_CHARS) {
+        return `data[${i}] contains a cell exceeding ${MAX_CELL_CHARS} characters`;
+      }
     }
   }
   if (data.length > MAX_ROWS + 1) {
@@ -240,6 +258,7 @@ export function parseCSV(text) {
 }
 
 function autoType(val) {
+  if (val.length > MAX_CELL_CHARS) throw { type: "INVALID_CSV", message: `Cell exceeds maximum of ${MAX_CELL_CHARS} characters` };
   const trimmed = val.trim();
   if (trimmed === "") return null;
   if (trimmed.startsWith("=")) return trimmed; // formula
@@ -293,11 +312,12 @@ export function evaluate({ data, formulas, headers, groupBy }) {
     result = evaluateGroupBy(normalized, columnMap, groupBy);
     mode = "groupBy";
   } else {
-    const hf = HyperFormula.buildFromSheets(
-      { [name]: normalized },
-      { licenseKey: "gpl-v3", maxRows: MAX_ROWS + 1001, maxColumns: MAX_COLS + 100 }
-    );
+    const hf = HyperFormula.buildFromSheets({ [name]: normalized }, ENGINE_CONFIG);
     const sheetId = hf.getSheetId(hf.getSheetName(0));
+
+    for (const [constName, expr] of Object.entries(CONSTANT_NAMED_EXPRESSIONS)) {
+      hf.addNamedExpression(constName, expr);
+    }
 
     // Named expressions from headers: each column name refers to its data range
     if (columnMap) {
@@ -311,10 +331,18 @@ export function evaluate({ data, formulas, headers, groupBy }) {
     }
 
     if (Array.isArray(formulas) && formulas.length > 0) {
-      // Formulas mode — all formulas set in one operation, results in the same order
-      const formulaRow = normalized.length;
-      hf.setCellContents({ sheet: sheetId, row: formulaRow, col: 0 }, [formulas]);
-      result = formulas.map((_, i) => unwrapValue(hf.getCellValue({ sheet: sheetId, row: formulaRow, col: i })));
+      // Formulas mode — each formula is evaluated on its own, outside the sheet,
+      // so whole-column references never see other formulas, one broken formula
+      // only fails itself, and array results (UNIQUE, SORT, FILTER, ...) come
+      // back whole as 2D arrays.
+      result = formulas.map((formula) => {
+        try {
+          return unwrapValue(hf.calculateFormula(formula, sheetId));
+        } catch (err) {
+          const notAFormula = err && err.constructor && err.constructor.name === "NotAFormulaError";
+          return { error: "#ERROR!", message: notAFormula ? "Not a valid formula" : "Formula could not be evaluated" };
+        }
+      });
       mode = "formulas";
     } else {
       // Embedded formula mode — return the full evaluated grid
@@ -422,6 +450,7 @@ function extractGrid(hf, sheetId, rows, cols) {
 
 
 function unwrapValue(v) {
+  if (Array.isArray(v)) return v.map((row) => (Array.isArray(row) ? row.map(unwrapValue) : unwrapValue(row)));
   if (v !== null && typeof v === "object" && v.type !== undefined) {
     // HyperFormula error object
     return { error: String(v.value ?? v) };
@@ -460,7 +489,7 @@ const API_SCHEMA = {
     formulas: {
       type: "array of strings",
       required: false,
-      description: "Array of formulas (each starting with '='). All evaluated in one pass. Returns array of results in same order. Mutually exclusive with 'groupBy'. With headers:true, use column names directly.",
+      description: "Array of formulas (each starting with '='). Each is evaluated independently; the result array is in the same order. A formula that errors returns {error} without affecting the others. Formulas that return ranges or arrays (UNIQUE, SORT, FILTER, SEQUENCE, ...) return a 2D array. Mutually exclusive with 'groupBy'. With headers:true, use column names directly.",
       example: ["=SUM(Revenue)", "=AVERAGE(Cost)", "=COUNTIF(Region,\"Europe\")"],
     },
     groupBy: {
@@ -497,6 +526,12 @@ const API_SCHEMA = {
     "TEXT", "VALUE", "LARGE", "SMALL", "RANK",
   ],
   columnReference: "Columns are letters: A=0, B=1, C=2, ... Z=25, AA=26. Rows are 1-indexed. With headers:true, use column names directly in formulas instead of cell references.",
+  evaluationNotes: [
+    "TRUE and FALSE work as bare constants (e.g. VLOOKUP(x,range,2,FALSE)).",
+    "Array arithmetic is enabled: SUMPRODUCT((A2:A9=\"EU\")*B2:B9) and similar expressions work without Ctrl+Shift+Enter.",
+    "Dates written as YYYY-MM-DD, DD/MM/YYYY or DD/MM/YY are parsed as dates (serial numbers); use TEXT() to format them back.",
+    "Each formula in 'formulas' is evaluated independently; array results are returned as 2D arrays.",
+  ],
   links: {
     openapi: "/openapi.json",
     mcp: "/mcp",
@@ -656,6 +691,9 @@ async function handleCalc(request, env, ctx) {
   } catch {
     return fail(400, "INVALID_JSON", "Could not parse request body as JSON");
   }
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    return fail(400, "INVALID_JSON", "Request body must be a JSON object");
+  }
 
   const telemetry = { transport: "http", userAgent: request.headers.get("user-agent") };
   const outcome = processCalcBody(body);
@@ -682,9 +720,12 @@ const MCP_DATA_PARAMS = {
   data: { type: "array", items: { type: "array" }, description: "2D JSON array. Use this OR csv, not both." },
 };
 
+const MCP_ANNOTATIONS = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+
 const MCP_TOOLS = [
   {
     name: "calc_formulas",
+    annotations: { title: "Evaluate formulas", ...MCP_ANNOTATIONS },
     description:
       "Evaluate spreadsheet formulas against a dataset. Send data as a CSV string or JSON 2D array. With headers:true, formulas can reference column names (e.g. =SUM(Revenue)). Supports 400+ Excel-compatible functions: SUM, AVERAGE, COUNTIF, VLOOKUP, XLOOKUP, IF, SUMPRODUCT, etc. Up to 50,000 rows.",
     inputSchema: {
@@ -699,6 +740,7 @@ const MCP_TOOLS = [
   },
   {
     name: "calc_groupby",
+    annotations: { title: "Group and aggregate", ...MCP_ANNOTATIONS },
     description:
       "Aggregate data by groups. Groups rows by a column and computes SUM, AVERAGE, COUNT, MIN, MAX, or MEDIAN per group. Data must include a header row. Returns one row per group.",
     inputSchema: {
@@ -717,6 +759,7 @@ const MCP_TOOLS = [
   },
   {
     name: "calc_grid",
+    annotations: { title: "Evaluate grid", ...MCP_ANNOTATIONS },
     description:
       "Evaluate a grid with embedded formulas. Formulas in cells (strings starting with '=') are computed and the full grid is returned with values resolved. Useful for building spreadsheet-like calculations.",
     inputSchema: {
@@ -728,6 +771,7 @@ const MCP_TOOLS = [
 
 function displayValue(v) {
   if (v === null || v === undefined) return "";
+  if (Array.isArray(v)) return JSON.stringify(v);
   if (typeof v === "object" && v.error) return `ERROR: ${v.error}`;
   return String(v);
 }
@@ -771,6 +815,9 @@ function formatMcpResult(name, args, json) {
 }
 
 function handleMcpMessage(msg, env, ctx, clientIp, userAgent) {
+  if (msg === null || typeof msg !== "object" || Array.isArray(msg)) {
+    return { jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid Request" } };
+  }
   // Notifications (no id) get no response
   if (msg.id === undefined || msg.id === null) return null;
 

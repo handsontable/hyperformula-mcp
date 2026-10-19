@@ -102,7 +102,7 @@
           "formulas": {
             "type": "array",
             "items": { "type": "string" },
-            "description": "Array of formulas (each starting with '='). Evaluated in one pass. Returns array of results. Mutually exclusive with 'groupBy'."
+            "description": "Array of formulas (each starting with '='). Each is evaluated independently; a failing formula returns an {error} object in its slot. Array results (UNIQUE, SORT, FILTER, ...) are returned as 2D arrays. Mutually exclusive with 'groupBy'."
           },
           "groupBy": {
             "type": "object",

@@ -34,6 +34,33 @@ describe("formulas mode", () => {
     assert.equal(out.result[0], 1000);
   });
 
+  it("whole-column references do not see other formulas", () => {
+    const out = evaluate({ data: [["a"], [1], [2]], headers: true, formulas: ["=SUM(a)", "=SUM(A:A)"] });
+    assert.deepEqual(out.result, [3, 3]);
+  });
+
+  it("isolates a broken formula from the rest of the batch", () => {
+    const out = evaluate({ data: [[1]], formulas: ["=A1*2", "=OFFSET()", "=1+", "=FOO(1)"] });
+    assert.equal(out.result[0], 2);
+    assert.equal(out.result[1].error, "#ERROR!");
+    assert.equal(out.result[2].error, "#ERROR!");
+    assert.equal(out.result[3].error, "#NAME?");
+  });
+
+  it("returns array results whole as 2D arrays", () => {
+    const out = evaluate({ data: [["x"], ["y"], ["x"]], formulas: ["=UNIQUE(A1:A3)", "=SORT(A1:A3)", "=A1:A2"] });
+    assert.deepEqual(out.result, [[["x"], ["y"]], [["x"], ["x"], ["y"]], [["x"], ["y"]]]);
+  });
+
+  it("supports bare TRUE/FALSE, array arithmetic and ISO dates", () => {
+    const out = evaluate({
+      data: [["k", "v", "d"], ["EU", 1, "2024-01-31"], ["US", 2, "2024-02-29"], ["EU", 3, "2024-03-31"]],
+      headers: true,
+      formulas: ['=VLOOKUP("US",A2:B4,2,FALSE)', '=SUMPRODUCT((k="EU")*v)', "=YEAR(C2)", "=C3-C2", "=IF(TRUE,1,2)"],
+    });
+    assert.deepEqual(out.result, [2, 4, 2024, 29, 1]);
+  });
+
   it("returns a HyperFormula error object for a bad formula", () => {
     const out = evaluate({ data: [[1]], formulas: ["=1/0"] });
     assert.ok(out.result[0] && typeof out.result[0] === "object" && out.result[0].error);
@@ -211,6 +238,22 @@ describe("worker fetch handler", () => {
     assert.equal(json.error.type, "PAYLOAD_TOO_LARGE");
   });
 
+  it("400s a null JSON body instead of crashing", async () => {
+    const res = await worker.fetch(req("/api/calc", { body: "null" }), {}, CTX);
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).error.type, "INVALID_JSON");
+  });
+
+  it("enforces the cell size cap on JSON data and unquoted CSV fields", async () => {
+    const big = "x".repeat(10_001);
+    const r1 = await worker.fetch(req("/api/calc", { body: JSON.stringify({ data: [[big]], formulas: ["=LEN(A1)"] }) }), {}, CTX);
+    assert.equal(r1.status, 400);
+    assert.equal((await r1.json()).error.type, "INVALID_DATA");
+    const r2 = await worker.fetch(req("/api/calc", { body: JSON.stringify({ csv: `a\n${big}`, formulas: ["=LEN(A2)"] }) }), {}, CTX);
+    assert.equal(r2.status, 400);
+    assert.equal((await r2.json()).error.type, "INVALID_CSV");
+  });
+
   it("evaluates a POST with results", async () => {
     const res = await worker.fetch(
       req("/api/calc", { body: JSON.stringify({ data: [[1, 2], [3, 4]], formulas: ["=SUM(A1:B2)"] }) }),
@@ -312,6 +355,18 @@ describe("remote MCP endpoint", () => {
     }), {}, CTX);
     const json = await res.json();
     assert.equal(json.result.isError, true);
+  });
+
+  it("answers a null JSON-RPC body with -32600 instead of crashing", async () => {
+    const res = await worker.fetch(req("/mcp", { body: "null" }), {}, CTX);
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).error.code, -32600);
+  });
+
+  it("advertises tool annotations", async () => {
+    const res = await worker.fetch(mcpReq({ jsonrpc: "2.0", id: 2, method: "tools/list" }), {}, CTX);
+    const json = await res.json();
+    assert.ok(json.result.tools.every((t) => t.annotations.readOnlyHint === true));
   });
 
   it("rejects unknown methods with -32601", async () => {

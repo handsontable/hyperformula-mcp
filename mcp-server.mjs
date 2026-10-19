@@ -42,9 +42,14 @@ const FILE_PARAMS = {
   output_file: { type: "string", description: "Path to write the result as an .xlsx file. Returns the file path on success." },
 };
 
+// The local server reads and (with output_file) writes files, and forwards
+// computation to the hosted API.
+const ANNOTATIONS = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true };
+
 const TOOLS = [
   {
     name: "calc_formulas",
+    annotations: { title: "Evaluate formulas", ...ANNOTATIONS },
     description:
       "Evaluate spreadsheet formulas against a dataset. Send data as CSV string, JSON 2D array, or a local file path (.xlsx/.csv). With headers:true, formulas can reference column names (e.g. =SUM(Revenue)). Supports 400+ Excel-compatible functions: SUM, AVERAGE, COUNTIF, VLOOKUP, IF, SUMPRODUCT, etc. Up to 50,000 rows.",
     inputSchema: {
@@ -61,6 +66,7 @@ const TOOLS = [
   },
   {
     name: "calc_groupby",
+    annotations: { title: "Group and aggregate", ...ANNOTATIONS },
     description:
       "Aggregate data by groups. Groups rows by a column and computes SUM, AVERAGE, COUNT, MIN, MAX, or MEDIAN per group. Requires a CSV string or local file (.xlsx/.csv) with headers. Returns array of {group, ...aggregates} objects.",
     inputSchema: {
@@ -80,6 +86,7 @@ const TOOLS = [
   },
   {
     name: "calc_grid",
+    annotations: { title: "Evaluate grid", ...ANNOTATIONS },
     description:
       "Evaluate a grid with embedded formulas. Formulas in cells (strings starting with '=') are computed and the full grid is returned with values resolved. Accepts a 2D array or a local file path (.xlsx/.csv). Useful for building spreadsheet-like calculations.",
     inputSchema: {
@@ -111,8 +118,14 @@ async function callApi(body) {
 
 function displayValue(v) {
   if (v === null || v === undefined) return "";
+  if (Array.isArray(v)) return JSON.stringify(v);
   if (typeof v === "object" && v.error) return `ERROR: ${v.error}`;
   return String(v);
+}
+
+// Cell value for xlsx output: scalars as-is, errors and arrays as text.
+function cellValue(v) {
+  return v !== null && typeof v === "object" ? displayValue(v) : v;
 }
 
 async function handleCalcFormulas(args) {
@@ -151,10 +164,7 @@ async function handleCalcFormulas(args) {
   }
 
   if (args.output_file) {
-    const grid = [["Formula", "Result"], ...args.formulas.map((f, i) => {
-      const v = json.result[i];
-      return [f, v && typeof v === "object" && v.error ? `ERROR: ${v.error}` : v];
-    })];
+    const grid = [["Formula", "Result"], ...args.formulas.map((f, i) => [f, cellValue(json.result[i])])];
     writeGridToXlsx(grid, args.output_file);
     lines.push(`\nWritten to: ${args.output_file}`);
   }
@@ -214,7 +224,7 @@ async function handleCalcGrid(args) {
   }
 
   if (args.output_file) {
-    writeGridToXlsx(json.result, args.output_file);
+    writeGridToXlsx(json.result.map((row) => row.map(cellValue)), args.output_file);
     lines.push(`\nWritten to: ${args.output_file}`);
   }
 

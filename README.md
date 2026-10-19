@@ -67,7 +67,7 @@ curl -X POST https://hyperformula-mcp.handsontable-sandbox.workers.dev/api/calc 
 ```
 
 ### Named Columns
-When `headers: true`, row 1 becomes column names usable directly in formulas. Column names with spaces are sanitized (spaces become underscores). Both the original name and sanitized name work.
+When `headers: true`, row 1 becomes column names usable directly in formulas. Column names with spaces are sanitized (spaces become underscores). Both the original name and sanitized name work. A column named `TRUE` or `FALSE` keeps its constant meaning and must be referenced by letter.
 
 ```json
 {"csv": "Total Revenue,Total Cost\n1000,800", "headers": true, "formulas": ["=SUM(Total_Revenue)"]}
@@ -191,7 +191,7 @@ is a no-op.
 | Max body size | 50 MB |
 | Max formula length | 2,000 characters |
 | Max formulas per request | 100 |
-| Max cell size (CSV) | 10,000 characters |
+| Max cell size | 10,000 characters |
 | Max distinct groups (groupBy) | 10,000 |
 | Rate limit | 60 requests/minute per IP |
 
@@ -207,13 +207,21 @@ is a no-op.
 **Date**: DATE, YEAR, MONTH, DAY, TODAY, NOW
 **Statistical**: LARGE, SMALL, RANK, SUMPRODUCT
 
+### Evaluation Notes
+
+- Each entry in `formulas` is evaluated independently. A formula that fails returns `{"error": "#NAME?"}`-style objects (or `{"error": "#ERROR!"}` when it cannot be parsed) without affecting the other results.
+- Formulas that return ranges or arrays (`UNIQUE`, `SORT`, `FILTER`, `SEQUENCE`, a bare `A1:B3`, ...) return a 2D array in the result slot.
+- `TRUE` and `FALSE` work as bare constants, so `VLOOKUP(x, range, 2, FALSE)` behaves as in Excel.
+- Array arithmetic is on: `SUMPRODUCT((Region="EU")*Revenue)` and similar expressions work.
+- Dates written as `YYYY-MM-DD`, `DD/MM/YYYY` or `DD/MM/YY` are parsed as dates and stored as serial numbers, so `YEAR(A2)` and date arithmetic work. In grid mode such cells come back as numbers; use `TEXT()` to format them.
+
 ### Response Format
 
 ```json
 {
   "success": true,
   "mode": "formulas | grid | groupBy",
-  "result": "array of values | 2D grid | array of group objects",
+  "result": "array of values, {error} objects or 2D arrays | 2D grid | array of group objects",
   "meta": {
     "rows": 50001,
     "cols": 14,

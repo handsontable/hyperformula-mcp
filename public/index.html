@@ -398,7 +398,7 @@
 
       <div class="mode-card">
         <h3>Multi-Formula Mode</h3>
-        <p class="desc">Evaluate multiple formulas in one request. Works with <code>data</code> (JSON arrays) or <code>csv</code>.</p>
+        <p class="desc">Evaluate multiple formulas in one request. Works with <code>data</code> (JSON arrays) or <code>csv</code>. Each formula is evaluated independently; array results (UNIQUE, SORT, FILTER) come back as 2D arrays.</p>
         <pre>{
   <span class="key">"data"</span><span class="punct">:</span> [[<span class="num">10</span>, <span class="num">20</span>], [<span class="num">30</span>, <span class="num">40</span>]],
   <span class="key">"formulas"</span><span class="punct">:</span> [<span class="str">"=SUM(A1:A2)"</span>, <span class="str">"=AVERAGE(A1:B2)"</span>]
@@ -457,7 +457,7 @@
           <tr><td>Max body size</td><td>50 MB</td></tr>
           <tr><td>Max formula length</td><td>2,000 chars</td></tr>
           <tr><td>Max formulas per request</td><td>100</td></tr>
-          <tr><td>Max CSV cell size</td><td>10,000 chars</td></tr>
+          <tr><td>Max cell size</td><td>10,000 chars</td></tr>
           <tr><td>Max distinct groups (groupBy)</td><td>10,000</td></tr>
           <tr><td>Rate limit</td><td>60 req/min per IP</td></tr>
         </tbody>
