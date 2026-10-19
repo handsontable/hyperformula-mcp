@@ -188,7 +188,7 @@ function validateData(data) {
   }
   const maxWidth = Math.max(...data.map((r) => r.length));
   if (maxWidth > MAX_COLS) {
-    return `data exceeds maximum of ${MAX_COLS} columns`;
+    return `data exceeds maximum of ${MAX_COLS} columns (to pass a list of values, use one column with one value per row)`;
   }
   return null;
 }
@@ -263,8 +263,8 @@ function autoType(val) {
   if (trimmed === "") return null;
   if (trimmed.startsWith("=")) return trimmed; // formula
   const num = Number(trimmed);
-  if (!isNaN(num) && trimmed !== "") return num;
-  return trimmed;
+  if (Number.isFinite(num) && trimmed !== "") return num;
+  return trimmed; // non-numeric, or Infinity/1e999 which stay text
 }
 
 function colToLetter(index) {
@@ -286,18 +286,43 @@ function sanitizeName(name) {
 }
 
 // Map header names (original and sanitized) to column letters and indexes.
+// Duplicate headers get a numeric suffix (a, a_2, a_3) so every column stays
+// addressable; the suffix is applied before sanitizing so "a" and "a!" (both
+// sanitize to "a") are also kept apart.
 function buildColumnMap(headerRow) {
   const columnMap = {};
+  const taken = new Set();
   for (let c = 0; c < headerRow.length; c++) {
     const raw = headerRow[c];
     if (raw == null) continue;
-    const colName = String(raw);
-    const safeName = sanitizeName(colName);
+    let colName = String(raw);
+    let safeName = sanitizeName(colName);
+    if (taken.has(colName) || taken.has(safeName)) {
+      let n = 2;
+      while (taken.has(`${colName}_${n}`) || taken.has(sanitizeName(`${colName}_${n}`))) n++;
+      colName = `${colName}_${n}`;
+      safeName = sanitizeName(colName);
+    }
+    taken.add(colName);
+    taken.add(safeName);
     const entry = { letter: colToLetter(c), index: c, namedExpression: safeName };
     columnMap[colName] = entry;
     if (safeName !== colName) columnMap[safeName] = entry;
   }
   return columnMap;
+}
+
+// Mirror the engine's export rounding (precisionRounding significant digits)
+// so groupBy results match what the same arithmetic returns in formulas mode,
+// and surface overflow as #NUM! instead of a JSON null.
+const PRECISION_ROUNDING = 10;
+function roundResult(value) {
+  if (typeof value !== "number") return value;
+  if (!Number.isFinite(value)) return { error: "#NUM!" };
+  if (value === 0) return 0;
+  const magnitude = Math.floor(Math.log10(Math.abs(value)));
+  const multiplier = Math.pow(10, PRECISION_ROUNDING - magnitude);
+  return value < 0 ? -Math.round(-value * multiplier) / multiplier : Math.round(value * multiplier) / multiplier;
 }
 
 export function evaluate({ data, formulas, headers, groupBy }) {
@@ -326,7 +351,11 @@ export function evaluate({ data, formulas, headers, groupBy }) {
         const col = entry.letter;
         try {
           hf.addNamedExpression(entry.namedExpression, `=${name}!$${col}$2:$${col}$${dataRows}`);
-        } catch (_) { /* skip if name conflicts with built-in */ }
+        } catch (_) {
+          // Name clashes with a cell reference (A1), a constant (TRUE) or is
+          // otherwise invalid: the column is still addressable by letter.
+          entry.namedExpression = null;
+        }
       }
     }
 
@@ -416,16 +445,16 @@ function evaluateGroupBy(normalized, columnMap, groupBy) {
       const { key, fn } = aggEntries[i];
       const c = acc.cols[i];
       switch (fn) {
-        case "SUM": row[key] = c.sum; break;
-        case "AVERAGE": row[key] = c.n === 0 ? { error: "#DIV/0!" } : c.sum / c.n; break;
+        case "SUM": row[key] = roundResult(c.sum); break;
+        case "AVERAGE": row[key] = c.n === 0 ? { error: "#DIV/0!" } : roundResult(c.sum / c.n); break;
         case "COUNT": row[key] = acc.count; break;
-        case "MIN": row[key] = c.n === 0 ? 0 : c.min; break;
-        case "MAX": row[key] = c.n === 0 ? 0 : c.max; break;
+        case "MIN": row[key] = c.n === 0 ? 0 : roundResult(c.min); break;
+        case "MAX": row[key] = c.n === 0 ? 0 : roundResult(c.max); break;
         case "MEDIAN": {
           if (c.n === 0) { row[key] = null; break; }
           const vals = c.values.sort((a, b) => a - b);
           const mid = Math.floor(vals.length / 2);
-          row[key] = vals.length % 2 === 0 ? (vals[mid - 1] + vals[mid]) / 2 : vals[mid];
+          row[key] = roundResult(vals.length % 2 === 0 ? (vals[mid - 1] + vals[mid]) / 2 : vals[mid]);
           break;
         }
       }
@@ -472,19 +501,19 @@ const API_SCHEMA = {
   parameters: {
     data: {
       type: "array of arrays",
-      required: "one of data or csv is required",
+      required: "one of data or csv is required, unless 'formulas' reference no cells (e.g. =PMT(0.05/12,60,10000))",
       description: "2D array of cell values. Strings starting with '=' are evaluated as formulas. Row 0 is row 1 in formulas (A1, B1, ...). Mutually exclusive with 'csv'.",
     },
     csv: {
       type: "string",
-      required: "one of data or csv is required",
+      required: "one of data or csv is required, unless 'formulas' reference no cells",
       description: "Raw CSV string. Parsed server-side into a 2D grid. Numeric values auto-detected. Supports quoted fields. Mutually exclusive with 'data'. Easiest way for AI agents to send data.",
       example: "Region,Revenue,Cost\nEurope,1000,800\nAsia,2000,1500",
     },
     headers: {
       type: "boolean",
       required: false,
-      description: "When true, row 1 is treated as column names. Formulas can reference columns by name (e.g. =SUM(Revenue)). Column names with spaces are sanitized (spaces→underscores). Response meta.columns shows the mapping. Required for groupBy.",
+      description: "When true, row 1 is treated as column names. Formulas can reference columns by name (e.g. =SUM(Revenue)). Any character other than A-Z, a-z, 0-9 and _ becomes _ (a leading digit gets a _ prefix); duplicate names get _2, _3 suffixes. Response meta.columns shows the mapping; namedExpression is null when a name cannot be used in formulas (e.g. a header named A1) and the column must be referenced by letter. Required for groupBy.",
     },
     formulas: {
       type: "array of strings",
@@ -554,7 +583,10 @@ function processCalcBody(body) {
   }
 
   let data;
-  if (csv !== undefined) {
+  if (rawData === undefined && csv === undefined && Array.isArray(formulas) && formulas.length > 0) {
+    // Pure-math formulas (=PMT(...), =DATE(...)) need no data: use an empty sheet
+    data = [[null]];
+  } else if (csv !== undefined) {
     if (typeof csv !== "string" || csv.trim() === "") {
       return invalid(400, "INVALID_CSV", "csv must be a non-empty string");
     }
@@ -727,7 +759,7 @@ const MCP_TOOLS = [
     name: "calc_formulas",
     annotations: { title: "Evaluate formulas", ...MCP_ANNOTATIONS },
     description:
-      "Evaluate spreadsheet formulas against a dataset. Send data as a CSV string or JSON 2D array. With headers:true, formulas can reference column names (e.g. =SUM(Revenue)). Supports 400+ Excel-compatible functions: SUM, AVERAGE, COUNTIF, VLOOKUP, XLOOKUP, IF, SUMPRODUCT, etc. Up to 50,000 rows.",
+      "Evaluate spreadsheet formulas against a dataset. Send data as a CSV string or JSON 2D array (omit both for formulas that need no data, e.g. =PMT(0.05/12,60,10000)). With headers:true, formulas can reference column names (e.g. =SUM(Revenue)). Supports 400+ Excel-compatible functions: SUM, AVERAGE, COUNTIF, VLOOKUP, XLOOKUP, IF, SUMPRODUCT, etc. Up to 50,000 rows and 50 columns; pass a list of values as one column.",
     inputSchema: {
       type: "object",
       properties: {
@@ -842,7 +874,7 @@ function handleMcpMessage(msg, env, ctx, clientIp, userAgent) {
         return rpcError(-32602, `Unknown tool: ${name}`);
       }
       const toolError = (text) => rpcResult({ content: [{ type: "text", text }], isError: true });
-      if (args.csv === undefined && args.data === undefined) {
+      if (args.csv === undefined && args.data === undefined && name !== "calc_formulas") {
         return toolError("Error: provide 'csv' or 'data'");
       }
       if (name === "calc_formulas" && !Array.isArray(args.formulas)) {
