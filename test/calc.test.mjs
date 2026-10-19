@@ -61,6 +61,19 @@ describe("formulas mode", () => {
     assert.deepEqual(out.result, [2, 4, 2024, 29, 1]);
   });
 
+  it("suffixes duplicate headers and marks unusable names", () => {
+    const out = evaluate({ data: [["a", "a", "b", "A1", "zażółć"], [1, 2, 3, 4, 5]], headers: true, formulas: ["=SUM(a)", "=SUM(a_2)", "=SUM(za____)"] });
+    assert.deepEqual(out.result, [1, 2, 5]);
+    assert.deepEqual(Object.keys(out.meta.columns), ["a", "a_2", "b", "A1", "zażółć", "za____"]);
+    assert.equal(out.meta.columns.A1.namedExpression, null);
+    assert.equal(out.meta.columns.A1.letter, "D");
+  });
+
+  it("evaluates formulas that need no data", () => {
+    const out = evaluate({ data: [[null]], formulas: ["=ROUND(PMT(0.05/12,60,10000),2)"] });
+    assert.equal(out.result[0], -188.71);
+  });
+
   it("returns a HyperFormula error object for a bad formula", () => {
     const out = evaluate({ data: [[1]], formulas: ["=1/0"] });
     assert.ok(out.result[0] && typeof out.result[0] === "object" && out.result[0].error);
@@ -144,6 +157,13 @@ describe("groupBy mode", () => {
     assert.throws(() => evaluate({ data, headers: true, groupBy: { by: "g", aggregates: { v: "SUM" } } }), (e) => e.type === "INVALID_GROUPBY" && /10000/.test(e.message));
   });
 
+  it("rounds like formulas mode and reports overflow as #NUM!", () => {
+    const sum = evaluate({ data: [["g", "v"], ["x", 0.1], ["x", 0.2], ["x", 0.3]], headers: true, groupBy: { by: "g", aggregates: { v: "SUM" } } });
+    assert.equal(sum.result[0].v, 0.6);
+    const big = evaluate({ data: [["g", "v"], ["x", 1e308], ["x", 1e308]], headers: true, groupBy: { by: "g", aggregates: { v: "SUM" } } });
+    assert.deepEqual(big.result[0].v, { error: "#NUM!" });
+  });
+
   it("throws for an unknown groupBy column", () => {
     assert.throws(() => evaluate({ data: [["a"], [1]], headers: true, groupBy: { by: "missing", aggregates: { a: "SUM" } } }));
   });
@@ -158,6 +178,10 @@ describe("parseCSV", () => {
 
   it("handles quoted fields containing commas", () => {
     assert.deepEqual(parseCSV('name,note\n"Doe, John",hi'), [["name", "note"], ["Doe, John", "hi"]]);
+  });
+
+  it("keeps Infinity and out-of-range numbers as text", () => {
+    assert.deepEqual(parseCSV("Infinity,1e999,007,-5"), [["Infinity", "1e999", 7, -5]]);
   });
 
   it("skips blank lines instead of emitting null rows", () => {
@@ -254,6 +278,12 @@ describe("worker fetch handler", () => {
     assert.equal((await r2.json()).error.type, "INVALID_CSV");
   });
 
+  it("accepts formulas without data over HTTP", async () => {
+    const res = await worker.fetch(req("/api/calc", { body: JSON.stringify({ formulas: ["=1+1"] }) }), {}, CTX);
+    assert.equal(res.status, 200);
+    assert.deepEqual((await res.json()).result, [2]);
+  });
+
   it("evaluates a POST with results", async () => {
     const res = await worker.fetch(
       req("/api/calc", { body: JSON.stringify({ data: [[1, 2], [3, 4]], formulas: ["=SUM(A1:B2)"] }) }),
@@ -326,6 +356,16 @@ describe("remote MCP endpoint", () => {
     const json = await res.json();
     assert.equal(json.error, undefined);
     assert.match(json.result.content[0].text, /=SUM\(v\) = 60/);
+  });
+
+  it("runs calc_formulas without csv or data", async () => {
+    const res = await worker.fetch(mcpReq({
+      jsonrpc: "2.0", id: 8, method: "tools/call",
+      params: { name: "calc_formulas", arguments: { formulas: ["=1+1"] } },
+    }), {}, CTX);
+    const json = await res.json();
+    assert.equal(json.result.isError, undefined);
+    assert.match(json.result.content[0].text, /=1\+1 = 2/);
   });
 
   it("executes calc_groupby via tools/call", async () => {

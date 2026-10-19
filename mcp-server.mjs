@@ -51,7 +51,7 @@ const TOOLS = [
     name: "calc_formulas",
     annotations: { title: "Evaluate formulas", ...ANNOTATIONS },
     description:
-      "Evaluate spreadsheet formulas against a dataset. Send data as CSV string, JSON 2D array, or a local file path (.xlsx/.csv). With headers:true, formulas can reference column names (e.g. =SUM(Revenue)). Supports 400+ Excel-compatible functions: SUM, AVERAGE, COUNTIF, VLOOKUP, IF, SUMPRODUCT, etc. Up to 50,000 rows.",
+      "Evaluate spreadsheet formulas against a dataset. Send data as CSV string, JSON 2D array, or a local file path (.xlsx/.csv); omit all three for formulas that need no data (e.g. =PMT(0.05/12,60,10000)). With headers:true, formulas can reference column names (e.g. =SUM(Revenue)). Supports 400+ Excel-compatible functions: SUM, AVERAGE, COUNTIF, VLOOKUP, IF, SUMPRODUCT, etc. Up to 50,000 rows and 50 columns; pass a list of values as one column.",
     inputSchema: {
       type: "object",
       properties: {
@@ -140,9 +140,8 @@ async function handleCalcFormulas(args) {
   } else if (args.data) {
     body.data = args.data;
     if (args.headers) body.headers = true;
-  } else {
-    throw new Error("Provide 'file', 'csv', or 'data'");
   }
+  // No source: formulas that reference no cells (=PMT(...)) run on an empty sheet
 
   const json = await callApi(body);
 

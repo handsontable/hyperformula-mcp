@@ -34,7 +34,7 @@ curl -X POST https://hyperformula-mcp.handsontable-sandbox.workers.dev/api/calc 
 ```
 
 ### GroupBy Mode
-Declarative aggregation — group rows by a column and compute SUM, AVERAGE, COUNT, MIN, MAX, or MEDIAN per group.
+Declarative aggregation — group rows by a column and compute SUM, AVERAGE, COUNT, MIN, MAX, or MEDIAN per group. Non-numeric cells are ignored by the numeric aggregates, `COUNT` counts the rows in the group, results are rounded like formula results, and overflow returns `#NUM!`.
 
 ```bash
 curl -X POST https://hyperformula-mcp.handsontable-sandbox.workers.dev/api/calc \
@@ -67,14 +67,17 @@ curl -X POST https://hyperformula-mcp.handsontable-sandbox.workers.dev/api/calc 
 ```
 
 ### Named Columns
-When `headers: true`, row 1 becomes column names usable directly in formulas. Column names with spaces are sanitized (spaces become underscores). Both the original name and sanitized name work. A column named `TRUE` or `FALSE` keeps its constant meaning and must be referenced by letter.
+When `headers: true`, row 1 becomes column names usable directly in formulas. Names are sanitized for formula use: any character other than `A-Z`, `a-z`, `0-9` and `_` becomes `_`, and a leading digit gets a `_` prefix (`Total Revenue` → `Total_Revenue`, `zażółć` → `za____`). Both the original name and the sanitized name work. Duplicate headers get a numeric suffix (`a`, `a_2`, `a_3`). `meta.columns` in the response lists the final names; when a name cannot be used in formulas (it looks like a cell reference such as `A1`, or is a constant such as `TRUE`) its `namedExpression` is `null` and the column must be referenced by letter.
 
 ```json
 {"csv": "Total Revenue,Total Cost\n1000,800", "headers": true, "formulas": ["=SUM(Total_Revenue)"]}
 ```
 
 ### CSV Input
-Pass raw CSV via the `csv` field instead of building JSON arrays. Numeric values are auto-detected. Supports quoted fields with commas and newlines.
+Pass raw CSV via the `csv` field instead of building JSON arrays. Numeric values are auto-detected (so `007` becomes `7`; quote values whose leading zeros matter and treat them as text in formulas). `Infinity` and out-of-range numbers such as `1e999` stay text. Supports quoted fields with commas and newlines.
+
+### Formulas Without Data
+Formulas that reference no cells need no dataset: send just `formulas` (`{"formulas": ["=PMT(0.05/12,60,10000)"]}`) and they are evaluated against an empty sheet.
 
 ---
 
