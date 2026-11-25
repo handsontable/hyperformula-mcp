@@ -5,3 +5,7 @@ node_modules/
 .DS_Store
 .toolmeta.yml
 .claude/
+
+# eval harness outputs
+eval/.cache/
+eval/results/
