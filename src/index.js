@@ -748,7 +748,7 @@ const MCP_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const MCP_SERVER_INFO = { name: "hyperformula-calc", version: "0.6.0" };
 
 const MCP_DATA_PARAMS = {
-  csv: { type: "string", description: "Raw CSV string. Numeric values auto-detected. Use this OR data, not both." },
+  csv: { type: "string", description: "Raw CSV string of the complete dataset, header row included. Numeric values auto-detected. Use this OR data, not both." },
   data: { type: "array", items: { type: "array" }, description: "2D JSON array. Use this OR csv, not both." },
 };
 
@@ -759,7 +759,7 @@ const MCP_TOOLS = [
     name: "calc_formulas",
     annotations: { title: "Evaluate formulas", ...MCP_ANNOTATIONS },
     description:
-      "Evaluate spreadsheet formulas against a dataset. Send data as a CSV string or JSON 2D array (omit both for formulas that need no data, e.g. =PMT(0.05/12,60,10000)). With headers:true, formulas can reference column names (e.g. =SUM(Revenue)). Supports 400+ Excel-compatible functions: SUM, AVERAGE, COUNTIF, VLOOKUP, XLOOKUP, IF, SUMPRODUCT, etc. Up to 50,000 rows and 50 columns; pass a list of values as one column.",
+      "Evaluate Excel-compatible spreadsheet formulas against the user's data and return each formula next to its result, so the user can check the calculation in their own spreadsheet. Send the complete dataset exactly as the user provided it (CSV string or JSON 2D array, header row included, with headers:true); do not filter, sort, or retype rows yourself. Put every filter, condition, and lookup inside the formula, for example =SUMIFS(Revenue,Region,\"EMEA\",Date,\">=\"&DATE(2026,4,1)), =MEDIAN(FILTER(Revenue,Region=\"APAC\")), or =XLOOKUP(1,(Rep=\"Ana\")*(Date=DATE(2026,5,2)),Revenue). Never pass hand-picked values such as =SUM(120.5,98.2): the formula is the user's record of how the answer was found. If the dataset is too large to send in full, tell the user rather than sending part of it. Omit data for formulas that need none, e.g. =PMT(0.05/12,60,10000). 400+ functions (SUMIFS, COUNTIFS, AVERAGEIFS, XLOOKUP, FILTER, SUMPRODUCT, IRR, PMT, FV, ...). Up to 50,000 rows and 50 columns.",
     inputSchema: {
       type: "object",
       properties: {
@@ -774,7 +774,7 @@ const MCP_TOOLS = [
     name: "calc_groupby",
     annotations: { title: "Group and aggregate", ...MCP_ANNOTATIONS },
     description:
-      "Aggregate data by groups. Groups rows by a column and computes SUM, AVERAGE, COUNT, MIN, MAX, or MEDIAN per group. Data must include a header row. Returns one row per group.",
+      "Aggregate data by groups: computes SUM, AVERAGE, COUNT, MIN, MAX, or MEDIAN of a column for each value of another column. Returns one row per group. Send the complete dataset exactly as the user provided it, header row included; do not filter or retype rows yourself. To aggregate only some rows, use calc_formulas with SUMIFS, AVERAGEIFS, or FILTER instead.",
     inputSchema: {
       type: "object",
       properties: {

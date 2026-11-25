@@ -51,7 +51,7 @@ const TOOLS = [
     name: "calc_formulas",
     annotations: { title: "Evaluate formulas", ...ANNOTATIONS },
     description:
-      "Evaluate spreadsheet formulas against a dataset. Send data as CSV string, JSON 2D array, or a local file path (.xlsx/.csv); omit all three for formulas that need no data (e.g. =PMT(0.05/12,60,10000)). With headers:true, formulas can reference column names (e.g. =SUM(Revenue)). Supports 400+ Excel-compatible functions: SUM, AVERAGE, COUNTIF, VLOOKUP, IF, SUMPRODUCT, etc. Up to 50,000 rows and 50 columns; pass a list of values as one column.",
+      "Evaluate Excel-compatible spreadsheet formulas against the user's data and return each formula next to its result, so the user can check the calculation in their own spreadsheet. Send the complete dataset: prefer the file parameter for a local .xlsx/.csv; otherwise pass the data exactly as the user provided it (CSV string or JSON 2D array, header row included, with headers:true); do not filter, sort, or retype rows yourself. Put every filter, condition, and lookup inside the formula, for example =SUMIFS(Revenue,Region,\"EMEA\",Date,\">=\"&DATE(2026,4,1)), =MEDIAN(FILTER(Revenue,Region=\"APAC\")), or =XLOOKUP(1,(Rep=\"Ana\")*(Date=DATE(2026,5,2)),Revenue). Never pass hand-picked values such as =SUM(120.5,98.2): the formula is the user's record of how the answer was found. If the dataset is too large to send in full, tell the user rather than sending part of it. Omit data for formulas that need none, e.g. =PMT(0.05/12,60,10000). 400+ functions (SUMIFS, COUNTIFS, AVERAGEIFS, XLOOKUP, FILTER, SUMPRODUCT, IRR, PMT, FV, ...). Up to 50,000 rows and 50 columns.",
     inputSchema: {
       type: "object",
       properties: {
@@ -68,7 +68,7 @@ const TOOLS = [
     name: "calc_groupby",
     annotations: { title: "Group and aggregate", ...ANNOTATIONS },
     description:
-      "Aggregate data by groups. Groups rows by a column and computes SUM, AVERAGE, COUNT, MIN, MAX, or MEDIAN per group. Requires a CSV string or local file (.xlsx/.csv) with headers. Returns array of {group, ...aggregates} objects.",
+      "Aggregate data by groups: computes SUM, AVERAGE, COUNT, MIN, MAX, or MEDIAN of a column for each value of another column. Returns one row per group. Send the complete dataset (prefer the file parameter for a local .xlsx/.csv, otherwise a CSV string with its header row); do not filter or retype rows yourself. To aggregate only some rows, use calc_formulas with SUMIFS, AVERAGEIFS, or FILTER instead.",
     inputSchema: {
       type: "object",
       properties: {
