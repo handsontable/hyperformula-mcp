@@ -10,8 +10,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { parseArgs } from 'node:util';
+import { fileURLToPath } from 'node:url';
 
-const here = path.dirname(new URL(import.meta.url).pathname);
+const here = path.dirname(fileURLToPath(import.meta.url));
 const { values: opt } = parseArgs({ options: {
   stage: { type: 'string', default: '1' },
   runs: { type: 'string', default: '0' }, // comma list of run indexes, e.g. "1,2"
@@ -60,28 +61,53 @@ async function mcp(method, params) {
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
     if (r.status === 429) { await sleep(5000); continue; }
     const text = await r.text();
-    const json = text.startsWith('{') ? JSON.parse(text) : JSON.parse(text.split('\n').find((l) => l.startsWith('data:')).slice(5));
+    let json;
+    try {
+      const line = text.startsWith('{') ? text : text.split('\n').find((l) => l.startsWith('data:'))?.slice(5);
+      json = JSON.parse(line);
+    } catch {
+      return { content: [{ type: 'text', text: `Error: unparsable response (HTTP ${r.status}): ${text.slice(0, 200)}` }] };
+    }
     return json.result ?? { content: [{ type: 'text', text: `Error: ${json.error?.message}` }] };
   }
   return { content: [{ type: 'text', text: 'Error: rate limited' }] };
 }
-const MCP_TOOLS = (await mcp('tools/list', {})).tools
-  .map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.inputSchema } }));
+async function loadMcpTools() {
+  let listed;
+  try { listed = await mcp('tools/list', {}); } catch (e) { listed = { error: e.message }; }
+  if (!Array.isArray(listed?.tools)) {
+    console.error(`Arm C needs the MCP server at ${MCP_URL}, but tools/list failed: ${listed?.error ?? listed?.content?.[0]?.text ?? 'no tools returned'}`);
+    process.exit(1);
+  }
+  return listed.tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.inputSchema } }));
+}
 const SANDBOX_TOOL = [{ type: 'function', function: { name: 'run_python',
   description: 'Run a Python 3.12 script in an isolated sandbox with pandas, numpy and numpy_financial installed, and return its stdout and stderr. No network. If the user provided data, it is at /data/input.csv. Print what you need to see.',
   parameters: { type: 'object', properties: { code: { type: 'string', description: 'Python source to run.' } }, required: ['code'] } } }];
 
+const MAX_OUTPUT_CHARS = 4000;
+let sandboxSeq = 0;
 function runPython(code, task) {
   return new Promise((resolve) => {
-    const args = ['run', '--rm', '-i', '--network', 'none', '--memory', '512m', '--cpus', '1', '--read-only', '--tmpfs', '/tmp'];
+    const name = `hf-eval-${process.pid}-${++sandboxSeq}`;
+    const args = ['run', '--rm', '-i', '--name', name, '--network', 'none', '--memory', '512m', '--cpus', '1', '--read-only', '--tmpfs', '/tmp'];
     if (task.csv) args.push('-v', `${path.join(here, '.cache/data', `${task.id}.csv`)}:/data/input.csv:ro`);
     args.push(SANDBOX_IMAGE, 'python', '-');
     const p = spawn('docker', args);
     let out = '';
-    const timer = setTimeout(() => { p.kill('SIGKILL'); out += '\n[timed out after 30 s]'; }, SANDBOX_TIMEOUT_MS);
-    p.stdout.on('data', (d) => { out += d; });
-    p.stderr.on('data', (d) => { out += d; });
-    p.on('close', (codeExit) => { clearTimeout(timer); resolve((out || `(no output, exit ${codeExit})`).slice(0, 4000)); });
+    let timedOut = false;
+    // Killing the docker CLI leaves the container running, so kill the container by name.
+    const timer = setTimeout(() => { timedOut = true; spawn('docker', ['kill', name]).on('error', () => {}); }, SANDBOX_TIMEOUT_MS);
+    const collect = (d) => { if (out.length < MAX_OUTPUT_CHARS) out += d; };
+    p.stdout.on('data', collect);
+    p.stderr.on('data', collect);
+    p.on('error', (e) => { clearTimeout(timer); resolve(`Error: could not start the sandbox: ${e.message}`); });
+    p.on('close', (codeExit) => {
+      clearTimeout(timer);
+      const text = (out || `(no output, exit ${codeExit})`).slice(0, MAX_OUTPUT_CHARS);
+      resolve(timedOut ? `${text}\n[timed out after ${SANDBOX_TIMEOUT_MS / 1000} s]` : text);
+    });
+    p.stdin.on('error', () => {});
     p.stdin.end(code);
   });
 }
@@ -113,8 +139,9 @@ export function score(t, text) {
   const v = m[1].replace(/[*`]/g, '');
   const num = (s) => parseFloat(s.replace(/[$,\s]/g, ''));
   if (typeof t.truth === 'number') {
-    let x = num(v);
-    if (t.id === 'irr' && /%/.test(v)) x /= 100;
+    const tok = v.match(/-?\$?[\d,]*\.?\d+(?:e-?\d+)?\s*(%)?/i);
+    let x = tok ? num(tok[0].replace('%', '')) : NaN;
+    if (t.id === 'irr' && tok?.[1]) x /= 100;
     return { ok: Math.abs(x - t.truth) <= t.tol, parsed: Number.isFinite(x) ? x : null };
   }
   const got = {};
@@ -174,13 +201,16 @@ async function trial(model, arm, t, run) {
 
 // --- Schedule (resumable)
 fs.mkdirSync(path.dirname(outFile), { recursive: true });
-const done = new Set(fs.existsSync(outFile)
-  ? fs.readFileSync(outFile, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
-    .filter((r) => !r.error).map((r) => `${r.model}|${r.arm}|${r.task}|${r.run}`)
-  : []);
+// Errored trials are re-run, so drop them from the file first; otherwise the report counts the trial twice.
+const kept = fs.existsSync(outFile)
+  ? fs.readFileSync(outFile, 'utf8').split('\n').filter(Boolean).filter((l) => !JSON.parse(l).error)
+  : [];
+if (fs.existsSync(outFile)) fs.writeFileSync(outFile, kept.map((l) => `${l}\n`).join(''));
+const done = new Set(kept.map((l) => JSON.parse(l)).map((r) => `${r.model}|${r.arm}|${r.task}|${r.run}`));
 const jobs = [];
 for (const run of runs) for (const t of TASKS) for (const arm of arms) for (const model of models)
   if (!done.has(`${model}|${arm}|${t.id}|${run}`)) jobs.push([model, arm, t, run]);
+const MCP_TOOLS = jobs.some((j) => j[1] === 'C') ? await loadMcpTools() : null;
 console.log(`stage ${opt.stage}: ${jobs.length} trials to run (${done.size} already done) → ${path.relative(process.cwd(), outFile)}`);
 
 let next = 0, finished = 0, spend = 0;

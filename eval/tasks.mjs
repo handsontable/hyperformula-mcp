@@ -3,9 +3,10 @@
 // when both agree within its tolerance. Run: node eval/tasks.mjs  (writes eval/.cache/tasks.json)
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { HyperFormula } from 'hyperformula';
 
-const here = path.dirname(new URL(import.meta.url).pathname);
+const here = path.dirname(fileURLToPath(import.meta.url));
 const cacheDir = path.join(here, '.cache');
 
 const REGIONS = ['EMEA', 'APAC', 'AMER', 'LATAM'];
