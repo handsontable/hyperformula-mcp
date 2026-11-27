@@ -420,3 +420,29 @@ describe("remote MCP endpoint", () => {
     assert.equal(res.status, 405);
   });
 });
+
+describe("caller IP behind the edge proxy", () => {
+  // The address Cloudflare substitutes for CF-Connecting-IP on a cross-account hop.
+  const PLACEHOLDER = "2a06:98c0:3600::103";
+  const ENV = { EDGE_PROXY_SHARED_SECRET: "test-secret" };
+  const ping = (headers, env = ENV) =>
+    worker.fetch(
+      req("/mcp", { body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }), headers: { "cf-connecting-ip": PLACEHOLDER, ...headers } }),
+      env,
+      CTX
+    );
+  const remaining = async (headers, env) => Number((await ping(headers, env)).headers.get("X-RateLimit-Remaining"));
+
+  it("gives each forwarded IP its own bucket when the proxy secret matches", async () => {
+    assert.equal(await remaining({ "x-client-ip": "198.51.100.1", "x-edge-proxy-auth": "test-secret" }), 59);
+    assert.equal(await remaining({ "x-client-ip": "198.51.100.1", "x-edge-proxy-auth": "test-secret" }), 58);
+    assert.equal(await remaining({ "x-client-ip": "198.51.100.2", "x-edge-proxy-auth": "test-secret" }), 59);
+  });
+
+  it("ignores a forwarded IP without the right secret", async () => {
+    // All three fall back to CF-Connecting-IP, so they drain the same bucket.
+    assert.equal(await remaining({ "x-client-ip": "198.51.100.3", "x-edge-proxy-auth": "wrong" }), 59);
+    assert.equal(await remaining({ "x-client-ip": "198.51.100.4" }), 58);
+    assert.equal(await remaining({ "x-client-ip": "198.51.100.5", "x-edge-proxy-auth": "test-secret" }, {}), 57);
+  });
+});

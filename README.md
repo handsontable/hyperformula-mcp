@@ -4,9 +4,9 @@ Stateless spreadsheet calculations via HTTP. Formulas instead of code.
 
 Send data and Excel-compatible formulas to a single API endpoint and get computed results back as JSON. Accepts raw CSV or JSON arrays. Supports named columns, declarative groupBy aggregation, and 400+ built-in functions. Up to 50,000 rows per request.
 
-- **Live API**: https://hyperformula-mcp.handsontable-sandbox.workers.dev
-- **API Schema**: https://hyperformula-mcp.handsontable-sandbox.workers.dev/api/calc (GET)
-- **Remote MCP**: https://hyperformula-mcp.handsontable-sandbox.workers.dev/mcp
+- **Live API**: https://hyperformula-mcp.handsontable.com
+- **API Schema**: https://hyperformula-mcp.handsontable.com/api/calc (GET)
+- **Remote MCP**: https://hyperformula-mcp.handsontable.com/mcp
 
 > Hosted as a Cloudflare Worker on the Handsontable sandbox account. The API is
 > public (no authentication) so AI agents and HTTP clients can call it directly.
@@ -21,7 +21,7 @@ Built on [HyperFormula](https://hyperformula.handsontable.com/), a headless spre
 Evaluate one or more formulas against a dataset. Returns an array of results.
 
 ```bash
-curl -X POST https://hyperformula-mcp.handsontable-sandbox.workers.dev/api/calc \
+curl -X POST https://hyperformula-mcp.handsontable.com/api/calc \
   -H "Content-Type: application/json" \
   -d '{
     "csv": "product,price,qty\nWidget,10,5\nGadget,25,3",
@@ -37,7 +37,7 @@ curl -X POST https://hyperformula-mcp.handsontable-sandbox.workers.dev/api/calc 
 Declarative aggregation — group rows by a column and compute SUM, AVERAGE, COUNT, MIN, MAX, or MEDIAN per group. Non-numeric cells are ignored by the numeric aggregates, `COUNT` counts the rows in the group, results are rounded like formula results, and overflow returns `#NUM!`.
 
 ```bash
-curl -X POST https://hyperformula-mcp.handsontable-sandbox.workers.dev/api/calc \
+curl -X POST https://hyperformula-mcp.handsontable.com/api/calc \
   -H "Content-Type: application/json" \
   -d '{
     "csv": "Region,Revenue,Units\nEurope,1000,50\nAsia,2000,80\nEurope,1500,30",
@@ -56,7 +56,7 @@ curl -X POST https://hyperformula-mcp.handsontable-sandbox.workers.dev/api/calc 
 Place formulas directly in data cells. Returns the full evaluated grid.
 
 ```bash
-curl -X POST https://hyperformula-mcp.handsontable-sandbox.workers.dev/api/calc \
+curl -X POST https://hyperformula-mcp.handsontable.com/api/calc \
   -H "Content-Type: application/json" \
   -d '{
     "data": [["a","b","sum"], [1,2,"=A2+B2"], [3,4,"=A3+B3"]]
@@ -85,7 +85,7 @@ Formulas that reference no cells need no dataset: send just `formulas` (`{"formu
 
 ### Option 1: Managed API
 
-The hosted API at `https://hyperformula-mcp.handsontable-sandbox.workers.dev/api/calc` is ready to use with no setup.
+The hosted API at `https://hyperformula-mcp.handsontable.com/api/calc` is ready to use with no setup.
 
 - **`GET /api/calc`** — Returns the full API schema with parameters, examples, supported formulas, and limits. Useful for AI agent discovery.
 - **`POST /api/calc`** — Evaluate formulas. Send JSON with `csv` or `data`, plus `formulas` or `groupBy`.
@@ -97,7 +97,7 @@ Rate limited to 60 requests/minute per IP. Responses include `X-RateLimit-Limit`
 The Worker exposes a hosted MCP endpoint (Streamable HTTP, stateless) — connect any MCP client with just the URL, no clone or install:
 
 ```
-https://hyperformula-mcp.handsontable-sandbox.workers.dev/mcp
+https://hyperformula-mcp.handsontable.com/mcp
 ```
 
 **Tools available:**
@@ -110,7 +110,7 @@ https://hyperformula-mcp.handsontable-sandbox.workers.dev/mcp
 **Claude Code:**
 
 ```bash
-claude mcp add --transport http hyperformula https://hyperformula-mcp.handsontable-sandbox.workers.dev/mcp
+claude mcp add --transport http hyperformula https://hyperformula-mcp.handsontable.com/mcp
 ```
 
 **claude.ai / Claude Desktop** — add the URL above as a custom connector (Settings → Connectors → Add custom connector). No authentication required.
