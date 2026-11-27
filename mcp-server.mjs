@@ -11,7 +11,7 @@ import * as cpexcel from "xlsx/dist/cpexcel.full.mjs";
 XLSX.set_fs(fs);
 XLSX.set_cptable(cpexcel);
 
-const API_URL = process.env.HYPERFORMULA_API_URL || "https://hyperformula-mcp.handsontable-sandbox.workers.dev/api/calc";
+const API_URL = process.env.HYPERFORMULA_API_URL || "https://hyperformula-mcp.handsontable.com/api/calc";
 
 // --- xlsx helpers ---
 

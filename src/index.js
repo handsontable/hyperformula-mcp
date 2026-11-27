@@ -1,5 +1,5 @@
 import { HyperFormula } from "hyperformula";
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 
 // --- Analytics (fetch-based PostHog capture, non-blocking) ---
 // On Workers we POST directly to the capture endpoint via ctx.waitUntil so it
@@ -122,6 +122,29 @@ const ENGINE_CONFIG = {
 const CONSTANT_NAMED_EXPRESSIONS = { TRUE: "=TRUE()", FALSE: "=FALSE()" };
 const RATE_LIMIT = 60; // requests per window
 const RATE_WINDOW_MS = 60_000; // 1 minute
+
+// --- Caller IP ---
+// The public hostname is served by a proxy Worker in another Cloudflare account
+// (the one that owns the handsontable.com zone). On that cross-account hop
+// Cloudflare replaces CF-Connecting-IP with a fixed placeholder, so every caller
+// would share one rate-limit bucket and one analytics id. The proxy therefore
+// forwards the real address in X-Client-IP, together with a shared secret; the
+// forwarded address is trusted only when the secret matches, so a direct caller
+// cannot pick their own bucket by setting the header themselves.
+function clientIpOf(request, env) {
+  const secret = env?.EDGE_PROXY_SHARED_SECRET;
+  const auth = request.headers.get("x-edge-proxy-auth");
+  const forwarded = request.headers.get("x-client-ip");
+  if (secret && auth && forwarded && secretsMatch(auth, secret)) return forwarded.trim();
+  return (request.headers.get("cf-connecting-ip") || request.headers.get("x-forwarded-for") || "unknown").split(",")[0].trim();
+}
+
+function secretsMatch(a, b) {
+  // Hash first so timingSafeEqual gets equal-length inputs and length leaks nothing.
+  const ha = createHash("sha256").update(a).digest();
+  const hb = createHash("sha256").update(b).digest();
+  return timingSafeEqual(ha, hb);
+}
 
 // --- Rate limiter (in-memory sliding window) ---
 // Per-isolate and ephemeral. Good enough for basic abuse protection; not a
@@ -675,7 +698,7 @@ async function handleCalc(request, env, ctx) {
   }
 
   // Rate limiting
-  const clientIp = (request.headers.get("cf-connecting-ip") || request.headers.get("x-forwarded-for") || "unknown").split(",")[0].trim();
+  const clientIp = clientIpOf(request, env);
   const rl = rateLimit(clientIp);
   if (!rl.allowed) {
     return new Response(
@@ -918,7 +941,7 @@ async function handleMcp(request, env, ctx) {
     });
   }
 
-  const clientIp = (request.headers.get("cf-connecting-ip") || request.headers.get("x-forwarded-for") || "unknown").split(",")[0].trim();
+  const clientIp = clientIpOf(request, env);
   const rl = rateLimit(clientIp);
   const h = { "Content-Type": "application/json", ...rateLimitHeaders(rl), ...corsHeaders };
   if (!rl.allowed) {
